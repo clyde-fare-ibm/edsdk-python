@@ -745,32 +745,65 @@ class CameraController:
             self.start_live_view()
             # give camera a brief moment to deliver first frame
             time.sleep(0.1)
+        # Retry loop for transient OBJECT_NOTREADY / DEVICE_BUSY conditions
+        MAX_ATTEMPTS = 10
+        RETRY_DELAY = 0.07  # ~70ms between attempts
+        ERR_OBJECT_NOT_READY = 0x0000A102
+        ERR_DEVICE_BUSY = 0x00000081
+        last_exc: Optional[Exception] = None
 
-        if save_path is not None:
-            os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-            out_stream = edsdk.CreateFileStream(
-                save_path, FileCreateDisposition.CreateAlways, Access.ReadWrite
-            )
-            evf_image = edsdk.CreateEvfImageRef(out_stream)
-            edsdk.DownloadEvfImage(self._cam, evf_image)
-            self._log(f"Live view saved: {save_path}")
-            return save_path
-
-        # Fallback: save to temp file and read bytes
-        tmp_path = os.path.join(self.save_dir, f"evf_{uuid.uuid4().hex}.jpg")
-        out_stream = edsdk.CreateFileStream(
-            tmp_path, FileCreateDisposition.CreateAlways, Access.ReadWrite
-        )
-        evf_image = edsdk.CreateEvfImageRef(out_stream)
-        edsdk.DownloadEvfImage(self._cam, evf_image)
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        self._log(f"Live view grabbed: {len(data)} bytes")
-        return data
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                if save_path is not None:
+                    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+                    out_stream = edsdk.CreateFileStream(
+                        save_path, FileCreateDisposition.CreateAlways, Access.ReadWrite
+                    )
+                    evf_image = edsdk.CreateEvfImageRef(out_stream)
+                    edsdk.DownloadEvfImage(self._cam, evf_image)
+                    self._log(
+                        f"Live view saved: {save_path} (attempt {attempt}/{MAX_ATTEMPTS})"
+                    )
+                    return save_path
+                # Fallback: save to temp file and read bytes
+                tmp_path = os.path.join(self.save_dir, f"evf_{uuid.uuid4().hex}.jpg")
+                out_stream = edsdk.CreateFileStream(
+                    tmp_path, FileCreateDisposition.CreateAlways, Access.ReadWrite
+                )
+                evf_image = edsdk.CreateEvfImageRef(out_stream)
+                edsdk.DownloadEvfImage(self._cam, evf_image)
+                with open(tmp_path, "rb") as f:
+                    data = f.read()
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                self._log(
+                    f"Live view grabbed: {len(data)} bytes (attempt {attempt}/{MAX_ATTEMPTS})"
+                )
+                return data
+            except Exception as e:  # Catch SDK error
+                code = getattr(e, "code", None)
+                msg = str(e)
+                # Detect transient errors
+                is_transient = False
+                if code in (ERR_OBJECT_NOT_READY, ERR_DEVICE_BUSY):
+                    is_transient = True
+                elif "OBJECT_NOTREADY" in msg or "DEVICE_BUSY" in msg:
+                    is_transient = True
+                if not is_transient or attempt >= MAX_ATTEMPTS:
+                    last_exc = e
+                    break
+                # Backoff and allow Windows message pump to progress
+                self._log(
+                    f"Live view retry {attempt}/{MAX_ATTEMPTS} after transient error: {msg}"
+                )
+                _pump_messages_once()
+                time.sleep(RETRY_DELAY)
+                continue
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Unexpected live view failure without exception")
 
     def grab_live_view_pil(self):
         """Grab one live-view frame and return as PIL Image (requires Pillow)."""
