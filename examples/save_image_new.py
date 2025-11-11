@@ -62,7 +62,6 @@ with CameraController(
     live_img.show()
 
     # example5: RAW画像をPNGに変換して保存
-    # RAW画像をPNGに変換して保存
     cam.set_properties(image_quality="LR")
     raw_paths = cam.capture(shots=1)
     for raw_path in raw_paths:
