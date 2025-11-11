@@ -3,7 +3,7 @@ from enum import IntEnum
 
 class PropID(IntEnum):
     # Camera Properties
-    Unknown = 0x0000ffff
+    Unknown = 0x0000FFFF
 
     ProductName = 0x00000002
     OwnerName = 0x00000004
@@ -11,9 +11,9 @@ class PropID(IntEnum):
     DateTime = 0x00000006
     FirmwareVersion = 0x00000007
     BatteryLevel = 0x00000008
-    SaveTo = 0x0000000b
-    CurrentStorage = 0x0000000c
-    CurrentFolder = 0x0000000d
+    SaveTo = 0x0000000B
+    CurrentStorage = 0x0000000C
+    CurrentFolder = 0x0000000D
 
     BatteryQuality = 0x00000010
 
@@ -30,7 +30,7 @@ class PropID(IntEnum):
     WhiteBalance = 0x00000106
     ColorTemperature = 0x00000107
     WhiteBalanceShift = 0x00000108
-    ColorSpace = 0x0000010d
+    ColorSpace = 0x0000010D
     PictureStyle = 0x00000114
     PictureStyleDesc = 0x00000115
     PictureStyleCaption = 0x00000200
@@ -59,12 +59,12 @@ class PropID(IntEnum):
     Tv = 0x00000406
     ExposureCompensation = 0x00000407
     FocalLength = 0x00000409
-    AvailableShots = 0x0000040a
-    Bracket = 0x0000040b
-    WhiteBalanceBracket = 0x0000040c
-    LensName = 0x0000040d
-    AEBracket = 0x0000040e
-    FEBracket = 0x0000040f
+    AvailableShots = 0x0000040A
+    Bracket = 0x0000040B
+    WhiteBalanceBracket = 0x0000040C
+    LensName = 0x0000040D
+    AEBracket = 0x0000040E
+    FEBracket = 0x0000040F
     ISOBracket = 0x00000410
     NoiseReduction = 0x00000411
     FlashOn = 0x00000412
@@ -116,7 +116,7 @@ class PropID(IntEnum):
     MovieParam = 0x01000423
     Aspect = 0x01000431
     MirrorUpSetting = 0x01000438
-    AutoPowerOffSetting = 0x0100045e
+    AutoPowerOffSetting = 0x0100045E
     Evf_ClickWBCoeffs = 0x01000506
     EVF_RollingPitching = 0x01000544
     Evf_VisibleRect = 0x01000546
@@ -126,7 +126,7 @@ class PropID(IntEnum):
     StillCurrentMedia = 0x01000473
     MovieCurrentMedia = 0x01000474
     FocusShiftSetting = 0x01000457
-    MovieHFRSetting = 0x0100045d
+    MovieHFRSetting = 0x0100045D
 
     # DC Properties
     DC_Zoom = 0x00000600
@@ -234,7 +234,7 @@ class ImageSize(IntEnum):
     Small1 = 14
     Small2 = 15
     Small3 = 16
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 class CompressQuality(IntEnum):
@@ -242,31 +242,31 @@ class CompressQuality(IntEnum):
     Fine = 3
     Lossless = 4
     SuperFine = 5
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 class ImageQuality(IntEnum):
     # Jpeg Only
-    LJ = 0x0010ff0f  # Jpeg Large
-    MJ = 0x0110ff0f  # Jpeg Middle
-    M1J = 0x0510ff0f  # Jpeg Middle1
-    M2J = 0x0610ff0f  # Jpeg Middle2
-    SJ = 0x0210ff0f  # Jpeg Small
-    S1J = 0x0e10ff0f  # Jpeg Small1
-    S2J = 0x0f10ff0f  # Jpeg Small2
-    LJF = 0x0013ff0f  # Jpeg Large Fine
-    LJN = 0x0012ff0f  # Jpeg Large Normal
-    MJF = 0x0113ff0f  # Jpeg Middle Fine
-    MJN = 0x0112ff0f  # Jpeg Middle Normal
-    SJF = 0x0213ff0f  # Jpeg Small Fine
-    SJN = 0x0212ff0f  # Jpeg Small Normal
-    S1JF = 0x0E13ff0f  # Jpeg Small1 Fine
-    S1JN = 0x0E12ff0f  # Jpeg Small1 Normal
-    S2JF = 0x0F13ff0f  # Jpeg Small2
-    S3JF = 0x1013ff0f  # Jpeg Small3
+    LJ = 0x0010FF0F  # Jpeg Large
+    MJ = 0x0110FF0F  # Jpeg Middle
+    M1J = 0x0510FF0F  # Jpeg Middle1
+    M2J = 0x0610FF0F  # Jpeg Middle2
+    SJ = 0x0210FF0F  # Jpeg Small
+    S1J = 0x0E10FF0F  # Jpeg Small1
+    S2J = 0x0F10FF0F  # Jpeg Small2
+    LJF = 0x0013FF0F  # Jpeg Large Fine
+    LJN = 0x0012FF0F  # Jpeg Large Normal
+    MJF = 0x0113FF0F  # Jpeg Middle Fine
+    MJN = 0x0112FF0F  # Jpeg Middle Normal
+    SJF = 0x0213FF0F  # Jpeg Small Fine
+    SJN = 0x0212FF0F  # Jpeg Small Normal
+    S1JF = 0x0E13FF0F  # Jpeg Small1 Fine
+    S1JN = 0x0E12FF0F  # Jpeg Small1 Normal
+    S2JF = 0x0F13FF0F  # Jpeg Small2
+    S3JF = 0x1013FF0F  # Jpeg Small3
 
     # RAW + Jpeg
-    LR = 0x0064ff0f  # RAW
+    LR = 0x0064FF0F  # RAW
     LRLJF = 0x00640013  # RAW + Jpeg Large Fine
     LRLJN = 0x00640012  # RAW + Jpeg Large Normal
     LRMJF = 0x00640113  # RAW + Jpeg Middle Fine
@@ -283,11 +283,11 @@ class ImageQuality(IntEnum):
     LRM1J = 0x00640510  # RAW + Jpeg Middle1
     LRM2J = 0x00640610  # RAW + Jpeg Middle2
     LRSJ = 0x00640210  # RAW + Jpeg Small
-    LRS1J = 0x00640e10  # RAW + Jpeg Small1
-    LRS2J = 0x00640f10  # RAW + Jpeg Small2
+    LRS1J = 0x00640E10  # RAW + Jpeg Small1
+    LRS2J = 0x00640F10  # RAW + Jpeg Small2
 
     # MRAW(SRAW1) + Jpeg
-    MR = 0x0164ff0f  # MRAW(SRAW1)
+    MR = 0x0164FF0F  # MRAW(SRAW1)
     MRLJF = 0x01640013  # MRAW(SRAW1) + Jpeg Large Fine
     MRLJN = 0x01640012  # MRAW(SRAW1) + Jpeg Large Normal
     MRMJF = 0x01640113  # MRAW(SRAW1) + Jpeg Middle Fine
@@ -305,7 +305,7 @@ class ImageQuality(IntEnum):
     MRSJ = 0x01640210  # MRAW(SRAW1) + Jpeg Small
 
     # SRAW(SRAW2) + Jpeg
-    SR = 0x0264ff0f  # SRAW(SRAW2)
+    SR = 0x0264FF0F  # SRAW(SRAW2)
     SRLJF = 0x02640013  # SRAW(SRAW2) + Jpeg Large Fine
     SRLJN = 0x02640012  # SRAW(SRAW2) + Jpeg Large Normal
     SRMJF = 0x02640113  # SRAW(SRAW2) + Jpeg Middle Fine
@@ -323,7 +323,7 @@ class ImageQuality(IntEnum):
     SRSJ = 0x02640210  # SRAW(SRAW2) + Jpeg Small
 
     # CRAW + Jpeg
-    CR = 0x0063ff0f  # CRAW
+    CR = 0x0063FF0F  # CRAW
     CRLJF = 0x00630013  # CRAW + Jpeg Large Fine
     CRMJF = 0x00630113  # CRAW + Jpeg Middle Fine
     CRM1JF = 0x00630513  # CRAW + Jpeg Middle1 Fine
@@ -344,42 +344,42 @@ class ImageQuality(IntEnum):
     CRM1J = 0x00630510  # CRAW + Jpeg Middle1
     CRM2J = 0x00630610  # CRAW + Jpeg Middle2
     CRSJ = 0x00630210  # CRAW + Jpeg Small
-    CRS1J = 0x00630e10  # CRAW + Jpeg Small1
-    CRS2J = 0x00630f10  # CRAW + Jpeg Small2
+    CRS1J = 0x00630E10  # CRAW + Jpeg Small1
+    CRS2J = 0x00630F10  # CRAW + Jpeg Small2
 
     # HEIF
-    HEIFL = 0x0080ff0f  # HEIF Large
+    HEIFL = 0x0080FF0F  # HEIF Large
     RHEIFL = 0x00640080  # RAW  + HEIF Large
-    CRHEIFL =  0x00630080  # CRAW + HEIF Large
+    CRHEIFL = 0x00630080  # CRAW + HEIF Large
 
-    HEIFLF = 0x0083ff0f  # HEIF Large Fine
-    HEIFLN = 0x0082ff0f  # HEIF Large Normal
-    HEIFMF = 0x0183ff0f  # HEIF Middle Fine
-    HEIFMN = 0x0182ff0f  # HEIF Middle Normal
-    HEIFS1F = 0x0e83ff0f  # HEIF Small1 Fine
-    HEIFS1N = 0x0e82ff0f  # HEIF Small1 Normal
-    HEIFS2F = 0x0f83ff0f  # HEIF Small2 Fine
+    HEIFLF = 0x0083FF0F  # HEIF Large Fine
+    HEIFLN = 0x0082FF0F  # HEIF Large Normal
+    HEIFMF = 0x0183FF0F  # HEIF Middle Fine
+    HEIFMN = 0x0182FF0F  # HEIF Middle Normal
+    HEIFS1F = 0x0E83FF0F  # HEIF Small1 Fine
+    HEIFS1N = 0x0E82FF0F  # HEIF Small1 Normal
+    HEIFS2F = 0x0F83FF0F  # HEIF Small2 Fine
     RHEIFLF = 0x00640083  # RAW + HEIF Large Fine
     RHEIFLN = 0x00640082  # RAW + HEIF Large Normal
     RHEIFMF = 0x00640183  # RAW + HEIF Middle Fine
     RHEIFMN = 0x00640182  # RAW + HEIF Middle Normal
-    RHEIFS1F = 0x00640e83  # RAW + HEIF Small1 Fine
-    RHEIFS1N = 0x00640e82  # RAW + HEIF Small1 Normal
-    RHEIFS2F = 0x00640f83  # RAW + HEIF Small2 Fine
+    RHEIFS1F = 0x00640E83  # RAW + HEIF Small1 Fine
+    RHEIFS1N = 0x00640E82  # RAW + HEIF Small1 Normal
+    RHEIFS2F = 0x00640F83  # RAW + HEIF Small2 Fine
     CRHEIFLF = 0x00630083  # CRAW + HEIF Large Fine
     CRHEIFLN = 0x00630082  # CRAW + HEIF Large Normal
     CRHEIFMF = 0x00630183  # CRAW + HEIF Middle Fine
     CRHEIFMN = 0x00630182  # CRAW + HEIF Middle Normal
-    CRHEIFS1F = 0x00630e83  # CRAW + HEIF Small1 Fine
-    CRHEIFS1N = 0x00630e82  # CRAW + HEIF Small1 Normal
-    CRHEIFS2F = 0x00630f83  # CRAW + HEIF Small2 Fine
+    CRHEIFS1F = 0x00630E83  # CRAW + HEIF Small1 Fine
+    CRHEIFS1N = 0x00630E82  # CRAW + HEIF Small1 Normal
+    CRHEIFS2F = 0x00630F83  # CRAW + HEIF Small2 Fine
 
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 # PropID.AEMode
 class AEMode(IntEnum):
-    Program = 0x00,
+    Program = 0x00
     Tv = 0x01
     Av = 0x02
     Manual = 0x03
@@ -419,7 +419,7 @@ class AEMode(IntEnum):
     Movie_Fantasy = 0x28
     Movie_Old = 0x29
     Movie_Memory = 0x2A
-    DirectMono= 0x2B
+    DirectMono = 0x2B
     Movie_Mini = 0x2C
     PanningAssist = 0x2D
     GroupPhoto = 0x2E
@@ -437,7 +437,7 @@ class AEMode(IntEnum):
     StarTimelapseMovie = 0x3D
     BackgroundBlur = 0x3E
     VideoBlog = 0x3F
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 # PropID.AEModeSelect
@@ -474,40 +474,40 @@ class ISOSpeedCamera(IntEnum):
     ISO25 = 0x00000038
     ISO50 = 0x00000040
     ISO100 = 0x00000048
-    ISO125 = 0x0000004b
-    ISO160 = 0x0000004d
+    ISO125 = 0x0000004B
+    ISO160 = 0x0000004D
     ISO200 = 0x00000050
     ISO250 = 0x00000053
     ISO320 = 0x00000055
     ISO400 = 0x00000058
-    ISO500 = 0x0000005b
-    ISO640 = 0x0000005d
+    ISO500 = 0x0000005B
+    ISO640 = 0x0000005D
     ISO800 = 0x00000060
     ISO1000 = 0x00000063
     ISO1250 = 0x00000065
     ISO1600 = 0x00000068
-    ISO2000 = 0x0000006b
-    ISO2500 = 0x0000006d
+    ISO2000 = 0x0000006B
+    ISO2500 = 0x0000006D
     ISO3200 = 0x00000070
     ISO4000 = 0x00000073
     ISO5000 = 0x00000075
     ISO6400 = 0x00000078
-    ISO8000 = 0x0000007b
-    ISO10000 = 0x0000007d
+    ISO8000 = 0x0000007B
+    ISO10000 = 0x0000007D
     ISO12800 = 0x00000080
     ISO16000 = 0x00000083
     ISO20000 = 0x00000085
     ISO25600 = 0x00000088
-    ISO32000 = 0x0000008b
-    ISO40000 = 0x0000008d
+    ISO32000 = 0x0000008B
+    ISO40000 = 0x0000008D
     ISO51200 = 0x00000090
     ISO64000 = 0x00000093
     ISO80000 = 0x00000095
     ISO102400 = 0x00000098
-    ISO204800 = 0x000000a0
-    ISO409600 = 0x000000a8
-    ISO819200 = 0x000000b0
-    NotValid_NoSettingsChanges = 0xffffffff
+    ISO204800 = 0x000000A0
+    ISO409600 = 0x000000A8
+    ISO819200 = 0x000000B0
+    NotValid_NoSettingsChanges = 0xFFFFFFFF
 
 
 class ISOSpeedImage(IntEnum):
@@ -540,46 +540,149 @@ class AFMode(IntEnum):
     AIServoAF_ServoAF = 1
     AIFocusAF = 2
     ManualFocus = 3  # ReadOnly
-    NotValid_NoSettingsChanges = 0xffffffff
+    NotValid_NoSettingsChanges = 0xFFFFFFFF
 
 
 # PropID.Av
 Av = {
-    0x08: "1", 0x0B: "1.1", 0x0C: "1.2", 0x0D: "1.2 (1/3)", 0x10: "1.4",
-    0x13: "1.6", 0x14: "1.8", 0x15: "1.8 (1/3)", 0x18: "2", 0x1B: "2.2",
-    0x1C: "2.5", 0x1D: "2.5 (1/3)", 0x20: "2.8", 0x23: "3.2", 0x85: "3.4",
-    0x24: "3.5", 0x25: "3.5 (1/3)", 0x28: "4", 0x2B: "4.5", 0x2C: "4.5",
-    0x2D: "5.0", 0x30: "5.6", 0x33: "6.3", 0x34: "6.7", 0x35: "7.1", 0x38: "8",
-    0x3B: "9", 0x3C: "9.5", 0x3D: "10", 0x40: "11", 0x43: "13 (1/3)",
-    0x44: "13", 0x45: "14", 0x48: "16", 0x4B: "18", 0x4C: "19", 0x4D: "20",
-    0x50: "22", 0x53: "25", 0x54: "27", 0x55: "29", 0x58: "32", 0x5B: "36",
-    0x5C: "38", 0x5D: "40", 0x60: "45", 0x63: "51", 0x64: "54", 0x65: "57",
-    0x68: "64", 0x6B: "72", 0x6C: "76", 0x6D: "80", 0x70: "91",
-    0xffffffff: "Not valid/no settings changes",
+    0x08: "1",
+    0x0B: "1.1",
+    0x0C: "1.2",
+    0x0D: "1.2 (1/3)",
+    0x10: "1.4",
+    0x13: "1.6",
+    0x14: "1.8",
+    0x15: "1.8 (1/3)",
+    0x18: "2",
+    0x1B: "2.2",
+    0x1C: "2.5",
+    0x1D: "2.5 (1/3)",
+    0x20: "2.8",
+    0x23: "3.2",
+    0x85: "3.4",
+    0x24: "3.5",
+    0x25: "3.5 (1/3)",
+    0x28: "4",
+    0x2B: "4.5",
+    0x2C: "4.5",
+    0x2D: "5.0",
+    0x30: "5.6",
+    0x33: "6.3",
+    0x34: "6.7",
+    0x35: "7.1",
+    0x38: "8",
+    0x3B: "9",
+    0x3C: "9.5",
+    0x3D: "10",
+    0x40: "11",
+    0x43: "13 (1/3)",
+    0x44: "13",
+    0x45: "14",
+    0x48: "16",
+    0x4B: "18",
+    0x4C: "19",
+    0x4D: "20",
+    0x50: "22",
+    0x53: "25",
+    0x54: "27",
+    0x55: "29",
+    0x58: "32",
+    0x5B: "36",
+    0x5C: "38",
+    0x5D: "40",
+    0x60: "45",
+    0x63: "51",
+    0x64: "54",
+    0x65: "57",
+    0x68: "64",
+    0x6B: "72",
+    0x6C: "76",
+    0x6D: "80",
+    0x70: "91",
+    0xFFFFFFFF: "Not valid/no settings changes",
 }
 
 
 # PropID.Tv
 Tv = {
     0x0C: "Bulb",
-    0x10: "30\"", 0x13: "25\"", 0x14: "20\"", 0x15: "20\" (1/3)",
-    0x18: "15\"", 0x1B: "13\"", 0x1C: "10\"", 0x1D: "10\" (1/3)",
-    0x20: "8\"", 0x23: "6\" (1/3)", 0x24: "6\"", 0x25: "5\"", 0x28: "4\"",
-    0x2B: "3\"2", 0x2C: "3", 0x2D: "2\"5", 0x30: "2", 0x33: "1\"6",
-    0x34: "1\"5", 0x35: "1\"3", 0x38: "1", 0x3B: "0\"8", 0x3C: "0\"7",
-    0x3D: "0\"6", 0x40: "0\"5", 0x43: "0\"4", 0x44: "0\"3", 0x45: "0\"3 (1/3)",
-    0x48: "1/4", 0x4B: "1/5", 0x4C: "1/6", 0x4D: "1/6 (1/3)", 0x50: "1/8",
-    0x53: "1/10 (1/3)", 0x54: "1/10", 0x55: "1/13", 0x58: "1/15",
-    0x5B: "1/20 (1/3)", 0x5C: "1/20",  0x5D: "1/25", 0x60: "1/30",
-    0x63: "1/40", 0x64: "1/45", 0x65: "1/50", 0x68: "1/60", 0x6B: "1/80",
-    0x6C: "1/90", 0x6D: "1/100", 0x70: "1/125", 0x73: "1/160", 0x74: "1/180",
-    0x75: "1/200", 0x78: "1/250", 0x7B: "1/320", 0x7C: "1/350", 0x7D: "1/400",
-    0x80: "1/500", 0x83: "1/640", 0x84: "1/750", 0x85: "1/800", 0x88: "1/1000",
-    0x8B: "1/1250", 0x8C: "1/1500", 0x8D: "1/1600", 0x90: "1/2000",
-    0x93: "1/2500", 0x94: "1/3000", 0x95: "1/3200", 0x98: "1/4000",
-    0x9B: "1/5000", 0x9C: "1/6000", 0x9D: "1/6400", 0xA0: "1/8000",
-    0xA3: "1/10000", 0xA5: "1/12800", 0xA8: "1/16000",
-    0xffffffff: "Not valid/no settings changes"
+    0x10: '30"',
+    0x13: '25"',
+    0x14: '20"',
+    0x15: '20" (1/3)',
+    0x18: '15"',
+    0x1B: '13"',
+    0x1C: '10"',
+    0x1D: '10" (1/3)',
+    0x20: '8"',
+    0x23: '6" (1/3)',
+    0x24: '6"',
+    0x25: '5"',
+    0x28: '4"',
+    0x2B: '3"2',
+    0x2C: "3",
+    0x2D: '2"5',
+    0x30: "2",
+    0x33: '1"6',
+    0x34: '1"5',
+    0x35: '1"3',
+    0x38: "1",
+    0x3B: '0"8',
+    0x3C: '0"7',
+    0x3D: '0"6',
+    0x40: '0"5',
+    0x43: '0"4',
+    0x44: '0"3',
+    0x45: '0"3 (1/3)',
+    0x48: "1/4",
+    0x4B: "1/5",
+    0x4C: "1/6",
+    0x4D: "1/6 (1/3)",
+    0x50: "1/8",
+    0x53: "1/10 (1/3)",
+    0x54: "1/10",
+    0x55: "1/13",
+    0x58: "1/15",
+    0x5B: "1/20 (1/3)",
+    0x5C: "1/20",
+    0x5D: "1/25",
+    0x60: "1/30",
+    0x63: "1/40",
+    0x64: "1/45",
+    0x65: "1/50",
+    0x68: "1/60",
+    0x6B: "1/80",
+    0x6C: "1/90",
+    0x6D: "1/100",
+    0x70: "1/125",
+    0x73: "1/160",
+    0x74: "1/180",
+    0x75: "1/200",
+    0x78: "1/250",
+    0x7B: "1/320",
+    0x7C: "1/350",
+    0x7D: "1/400",
+    0x80: "1/500",
+    0x83: "1/640",
+    0x84: "1/750",
+    0x85: "1/800",
+    0x88: "1/1000",
+    0x8B: "1/1250",
+    0x8C: "1/1500",
+    0x8D: "1/1600",
+    0x90: "1/2000",
+    0x93: "1/2500",
+    0x94: "1/3000",
+    0x95: "1/3200",
+    0x98: "1/4000",
+    0x9B: "1/5000",
+    0x9C: "1/6000",
+    0x9D: "1/6400",
+    0xA0: "1/8000",
+    0xA3: "1/10000",
+    0xA5: "1/12800",
+    0xA8: "1/16000",
+    0xFFFFFFFF: "Not valid/no settings changes",
 }
 
 
@@ -626,7 +729,7 @@ ExposureComponensation = {
     0xDC: "-4 1/2",
     0xDB: "-4 2/3",
     0xD8: "-5",
-    0xffffffff: "Not valid/no settings changes"
+    0xFFFFFFFF: "Not valid/no settings changes",
 }
 
 
@@ -636,7 +739,7 @@ class Bracket(IntEnum):
     ISOB = 0x02
     WBB = 0x04
     FEB = 0x08
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 # PropID.WhiteBalanceBracket
@@ -676,7 +779,7 @@ class WhiteBalance(IntEnum):
 class ColorSpace(IntEnum):
     sRGB = 1
     AdobeRGB = 2
-    Unknown = 0xffffffff
+    Unknown = 0xFFFFFFFF
 
 
 # PropID.PictureStyle
@@ -742,16 +845,16 @@ class LensStatus(IntEnum):
 
 # PropID.DC_Strobe
 class DcStrobe(IntEnum):
-	Auto = 0
-	On = 1
-	Slowsynchro = 2
-	Off = 3
+    Auto = 0
+    On = 1
+    Slowsynchro = 2
+    Off = 3
 
 
 # PropID.LensBarrelStatus
 class DcLensBarrelState(IntEnum):
-    Inner	= 0
-    Outer	= 1
+    Inner = 0
+    Outer = 1
 
 
 # PropID.Evf_OutputDevice
@@ -799,11 +902,11 @@ class EvfAFMode(IntEnum):
     LiveZoneLargeH = 0x07
     LiveZoneLargeV = 0x08
     LiveCatchAF = 0x09
-    LiveSpotAF = 0x0a
-    FlexibleZone1 = 0x0b
-    FlexibleZone2 = 0x0c
-    FlexibleZone3 = 0x0d
-    WholeArea = 0x0e
+    LiveSpotAF = 0x0A
+    FlexibleZone1 = 0x0B
+    FlexibleZone2 = 0x0C
+    FlexibleZone3 = 0x0D
+    WholeArea = 0x0E
 
 
 # PropID.Record
@@ -954,16 +1057,16 @@ MovieParam = {
     0x00091510: "7680x4320 29.97fps For editing(ALL-I)",
     0x00091530: "7680x4320 29.97fps Standard(IPB)",
     0x00091531: "7680x4320 29.97fps Light(IPB)",
-    0x000a3270: "23.98fps (RAW)",
-    0x000a3271: "23.98fps Light(RAW)",
-    0x000a3370: "24.00fps (RAW)",
-    0x000a3371: "24.00fps Light(RAW)",
-    0x000a3470: "25.00fps (RAW)",
-    0x000a3471: "25.00fps Light(RAW)",
-    0x000a3570: "29.97fps (RAW)",
-    0x000a3571: "29.97fps Light(RAW)",
-    0x000a3670: "50.00fps (RAW)",
-    0x000a3770: "59.94fps (RAW)",
+    0x000A3270: "23.98fps (RAW)",
+    0x000A3271: "23.98fps Light(RAW)",
+    0x000A3370: "24.00fps (RAW)",
+    0x000A3371: "24.00fps Light(RAW)",
+    0x000A3470: "25.00fps (RAW)",
+    0x000A3471: "25.00fps Light(RAW)",
+    0x000A3570: "29.97fps (RAW)",
+    0x000A3571: "29.97fps Light(RAW)",
+    0x000A3670: "50.00fps (RAW)",
+    0x000A3770: "59.94fps (RAW)",
     0x08001210: "1920x1080 23.98fps For editing(ALL-I)Crop",
     0x08001230: "1920x1080 23.98fps Standard(IPB)Crop",
     0x08001231: "1920x1080 23.98fps Light(IPB)Crop",
@@ -1013,7 +1116,7 @@ MovieParam = {
     0x08051631: "3840x2160 50.00fps Light (IPB)",
     0x08051710: "3840x2160 59.94fps For editing(ALL-I)",
     0x08051730: "3840x2160 59.94fps Standard(IPB)",
-    0x08051731: "3840x2160 59.94fps Light (IPB)"
+    0x08051731: "3840x2160 59.94fps Light (IPB)",
 }
 
 
@@ -1050,7 +1153,7 @@ class EvfRollingPitchingPosition(IntEnum):
 # PropID.AutoPowerOffSetting
 class AutoPowerOffSetting(IntEnum):
     Disabled = 0x00
-    PowerOffNow = 0xffffffff  # shutdown camera
+    PowerOffNow = 0xFFFFFFFF  # shutdown camera
 
 
 # PropID.Aspect
@@ -1059,7 +1162,7 @@ Aspect = {
     0x00000001: "1:1 (aspect ratio)",
     0x00000002: "4:3 (aspect ratio)",
     0x00000007: "16:9 (aspect ratio)",
-    0x0000000d: "1.6x (crop)",
+    0x0000000D: "1.6x (crop)",
 }
 
 

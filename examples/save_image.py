@@ -11,7 +11,9 @@ from edsdk import (
     Access,
     SaveTo,
     EdsObject,
+    PropertyEvent,
 )
+from edsdk.constants.properties import Av, Tv, ISOSpeedCamera
 
 if os.name == "nt":
     # If you're using the EDSDK on Windows,
@@ -23,13 +25,17 @@ if os.name == "nt":
 
 
 def save_image(object_handle: EdsObject, save_to: str) -> int:
-    dir_item_info = edsdk.GetDirectoryItemInfo(object_handle)
+    info = edsdk.GetDirectoryItemInfo(object_handle)
+    filename = info.get("szFileName") or f"{uuid.uuid4()}.bin"
+    dst = os.path.join(save_to, filename)
     out_stream = edsdk.CreateFileStream(
-        os.path.join(save_to, str(uuid.uuid4()) + ".raw"),
+        dst,
         FileCreateDisposition.CreateAlways,
-        Access.ReadWrite)
-    edsdk.Download(object_handle, dir_item_info["size"], out_stream)
+        Access.ReadWrite,
+    )
+    edsdk.Download(object_handle, info["size"], out_stream)
     edsdk.DownloadComplete(object_handle)
+    print(f"Saved: {dst}")
     return 0
 
 
@@ -60,8 +66,16 @@ if __name__ == "__main__":
     edsdk.OpenSession(cam)
     edsdk.SetObjectEventHandler(cam, ObjectEvent.All, callback_object)
     edsdk.SetPropertyData(cam, PropID.SaveTo, 0, SaveTo.Host)
-    print(edsdk.GetPropertyData(cam, PropID.SaveTo))
 
+    edsdk.SetPropertyData(cam, PropID.Av, 0, 0x38)
+    edsdk.SetPropertyData(cam, PropID.Tv, 0, 0x48)
+    edsdk.SetPropertyData(
+        cam, PropID.ISOSpeed, 0, ISOSpeedCamera.ISO400
+    )  # e.g., set to "100"
+    print(edsdk.GetPropertyData(cam, PropID.SaveTo, 0))
+    print(Av[edsdk.GetPropertyData(cam, PropID.Av, 0)])
+    print(Tv[edsdk.GetPropertyData(cam, PropID.Tv, 0)])
+    print()
     # Sets HD Capacity to an arbitrary big value
     edsdk.SetCapacity(
         cam, {"reset": True, "bytesPerSector": 512, "numberOfFreeClusters": 2147483647}
