@@ -578,12 +578,22 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
                 PyErr_Format(PyExc_TypeError, "Property %lu expects string", propertyID);
                 return nullptr;
             }
+        #if PY_VERSION_HEX >= 0x030C0000
+            // Python 3.12+: Use filesystem encoding directly
+            PyObject* pyString = PyUnicode_EncodeFSDefault(pyPropertyData);
+        #else
+            // Python 3.11 and earlier
             PyObject* pyString = PyUnicode_AsEncodedString(pyPropertyData, Py_FileSystemDefaultEncoding, Py_FileSystemDefaultEncodeErrors);
+        #endif
+            if (!pyString) {
+                return nullptr;
+            }
             propertyData = reinterpret_cast<uint8_t *>(strdup(PyBytes_AsString(pyString)));
             if (!propertyData) {
-                propertyData = nullptr;  // capture error later
+                Py_DECREF(pyString);
+                return nullptr;
             }
-            Py_DecRef(pyString);
+            Py_DECREF(pyString);
             break;
         }
     case kEdsDataType_UInt8:
@@ -971,7 +981,7 @@ static PyObject* PyEds_GetVolumeInfo(PyObject *Py_UNUSED(self), PyObject *pyVolu
     unsigned long retVal(EdsGetVolumeInfo(volume->edsObj, &volumeInfo));
     PyCheck_EDSERROR(retVal);
 
-    PyObject *pyStorageType = GetEnum("constants", "StorageType", volumeInfo.storageType);
+    PyObject *pyStorageType = GetEnum("edsdk.constants", "StorageType", volumeInfo.storageType);
     if (pyStorageType == nullptr) {
         PyErr_Clear();
         std::cout << "Unknown StorageType: " << volumeInfo.storageType << std::endl;
@@ -980,7 +990,7 @@ static PyObject* PyEds_GetVolumeInfo(PyObject *Py_UNUSED(self), PyObject *pyVolu
     PyObject *pyAccess = GetEnum("constants", "Access", volumeInfo.access);
     if (pyAccess == nullptr) {
         PyErr_Clear();
-        std::cout << "Unknown StorageType: " << volumeInfo.access << std::endl;
+        std::cout << "Unknown Access: " << volumeInfo.access << std::endl;
         pyAccess = PyLong_FromUnsignedLong(volumeInfo.access);
     }
     PyObject *pyMaxCapacity = PyLong_FromUnsignedLongLong(volumeInfo.maxCapacity);
@@ -1050,7 +1060,7 @@ static PyObject* PyEds_GetDirectoryItemInfo(PyObject *Py_UNUSED(self), PyObject 
     PyObject *pyGroupID = PyLong_FromUnsignedLong(dirItemInfo.groupID);
     PyObject *pyOption = PyLong_FromUnsignedLong(dirItemInfo.option);
     PyObject *pySzFileName = PyUnicode_DecodeFSDefault(dirItemInfo.szFileName);
-    PyObject *pyFormat = GetEnum("constants", "ObjectFormat", dirItemInfo.format);
+    PyObject *pyFormat = GetEnum("edsdk.constants", "ObjectFormat", dirItemInfo.format);
     if (pyFormat == nullptr) {
         PyErr_Clear();
         std::cout << "Unknown ObjectFormat: " << dirItemInfo.format << std::endl;
@@ -1287,23 +1297,35 @@ static PyObject* PyEds_CreateFileStream(PyObject *Py_UNUSED(self), PyObject *arg
     }
 
     if (!PyUnicode_Check(pyFilename) || PyUnicode_GET_LENGTH(pyFilename) == 0) {
-        PyErr_SetString(PyExc_TypeError, "filename parameter must be a non-empty string");
+    PyErr_SetString(PyExc_TypeError, "filename parameter must be a non-empty string");
+    return nullptr;
+    }
+    #if PY_VERSION_HEX >= 0x030C0000
+    // Python 3.12+: Use filesystem encoding directly
+    PyObject *pyfilenameEncoded = PyUnicode_EncodeFSDefault(pyFilename);
+    #else
+    // Python 3.11 and earlier
+    PyObject *pyfilenameEncoded = PyUnicode_AsEncodedString(
+        pyFilename,
+        Py_FileSystemDefaultEncoding,
+        Py_FileSystemDefaultEncodeErrors);
+    #endif
+
+    if (!pyfilenameEncoded) {
         return nullptr;
     }
-    PyObject *pyfilenameEncoded(
-        PyUnicode_AsEncodedString(pyFilename,
-                                  Py_FileSystemDefaultEncoding,
-                                  Py_FileSystemDefaultEncodeErrors));
+
     EdsStreamRef fileStream;
-    unsigned long retVal(EdsCreateFileStream(
+    unsigned long retVal = EdsCreateFileStream(
         PyBytes_AsString(pyfilenameEncoded),
         static_cast<EdsFileCreateDisposition>(createDisposition),
         static_cast<EdsAccess>(desiredAccess),
-        &fileStream));
+        &fileStream);
 
     if (retVal != EDS_ERR_OK) {
         Py_DECREF(pyfilenameEncoded);
         PyCheck_EDSERROR(retVal);
+        return nullptr;
     }
     Py_DECREF(pyfilenameEncoded);
     PyObject *pyFileStream = PyEdsObject_New(fileStream);
@@ -2349,9 +2371,12 @@ PyMODINIT_FUNC PyInit_api(void) {
 	}
 	Py_DECREF(pyEdsErrorDescr);
 
+    // CHANGED: for Python 3.9 and later, PyEval_InitThreads is called
+    #if PY_VERSION_HEX < 0x03090000
     if (!PyEval_ThreadsInitialized()) {
         PyEval_InitThreads();
     }
+    #endif
 
     return module;
 };
