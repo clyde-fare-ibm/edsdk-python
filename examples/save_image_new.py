@@ -44,3 +44,6 @@ with CameraController(
     fixed = cam.capture(filename="my_shot")
     for p in fixed:
         print("Saved (fixed name):", p)
+    # ライブビュー画像をPIL形式で取得して表示
+    live_img = cam.grab_live_view_pil()
+    live_img.show()
