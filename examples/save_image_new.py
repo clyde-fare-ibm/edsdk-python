@@ -10,6 +10,7 @@ AEモードは多くの機種でSDKから変更不可のため指定していま
 """
 
 from edsdk.camera_controller import CameraController
+import rawtopng
 
 # プロパティイベント警告を抑制したい場合は register_property_events=False を指定
 with CameraController(
@@ -47,3 +48,11 @@ with CameraController(
     # ライブビュー画像をPIL形式で取得して表示
     live_img = cam.grab_live_view_pil()
     live_img.show()
+
+    # RAW画像をPNGに変換して保存
+    cam.set_properties(image_quality="LR")
+    raw_paths = cam.capture(shots=1)
+    for raw_path in raw_paths:
+        png_path = raw_path.rsplit(".", 1)[0] + ".png"
+        rawtopng.RawtoPNG(raw_path, png_path)
+        print("Converted to PNG:", png_path)
