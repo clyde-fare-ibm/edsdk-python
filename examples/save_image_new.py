@@ -14,7 +14,7 @@ from edsdk.camera_controller import CameraController
 # プロパティイベント警告を抑制したい場合は register_property_events=False を指定
 with CameraController(
     index=0,
-    save_dir="out",
+    save_dir=".",
     register_property_events=False,
     file_pattern="{timestamp}_{seq:04d}.{ext}",  # 例: 20251111_153045_0001.jpg
 ) as cam:
