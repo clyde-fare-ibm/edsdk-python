@@ -32,7 +32,7 @@ extension = Extension(
     include_dirs=[os.path.join(EDSDK_PATH, "EDSDK/Header")],
     library_dirs=[os.path.join(EDSDK_PATH, "EDSDK_64/Library")],
     depends=["edsdk/edsdk_python.h", "edsdk/edsdk_utils.h"],
-    sources=["edsdk/edsdk_python.cpp","edsdk/edsdk_utils.cpp"],
+    sources=["edsdk/edsdk_python.cpp", "edsdk/edsdk_utils.cpp"],
     extra_compile_args=extra_compile_args,
 )
 
@@ -44,19 +44,42 @@ setup(
     url="https://github.com/jiloc/edsdk-python",
     description="Python wrapper for Canon EDSKD Library",
     long_description=long_description,
-    ext_modules = [extension],
-    install_requires=[
-        'pywin32 >= 228 ; platform_system=="Windows"'
-    ],
+    ext_modules=[extension],
+    install_requires=['pywin32 >= 228 ; platform_system=="Windows"'],
+    extras_require={
+        # ライブビュー表示や例を動かすためのオプション依存
+        "display": [
+            "numpy>=1.24",
+            "opencv-python>=4.9",
+            "Pillow>=10.0",
+        ],
+        "examples": [
+            "numpy>=1.24",
+            "opencv-python>=4.9",
+            "Pillow>=10.0",
+        ],
+        # 開発用（任意）
+        "dev": [
+            "pytest>=7.4",
+            "mypy>=1.8",
+            "black>=23.12",
+        ],
+    },
     setup_requires=["wheel"],
     packages=find_packages(),
     include_package_data=True,
     package_data={
         "edsdk": ["py.typed", "api.pyi"],
     },
-    data_files = [("Lib/site-packages/edsdk", [
-        EDSDK_PATH + "/EDSDK_64/Dll/EDSDK.dll",
-        EDSDK_PATH + "/EDSDK_64/Dll/EdsImage.dll"])],
+    data_files=[
+        (
+            "Lib/site-packages/edsdk",
+            [
+                EDSDK_PATH + "/EDSDK_64/Dll/EDSDK.dll",
+                EDSDK_PATH + "/EDSDK_64/Dll/EdsImage.dll",
+            ],
+        )
+    ],
     python_requires=">=3.8.0",
     long_description_content_type="text/markdown",
     classifiers=[

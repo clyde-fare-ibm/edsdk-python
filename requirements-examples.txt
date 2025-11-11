@@ -1,0 +1,4 @@
+# Optional dependencies for running examples and live view display
+numpy>=1.24
+opencv-python>=4.9
+Pillow>=10.0

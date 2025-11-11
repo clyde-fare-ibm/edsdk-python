@@ -1,0 +1,8 @@
+[build-system]
+requires = [
+  "setuptools>=61.0",
+  "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+# Note: Project metadata and extension configuration are defined in setup.py.

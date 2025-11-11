@@ -24,12 +24,16 @@ def _display_with_opencv(cam: CameraController, args) -> None:
     cv2 = _try_import_cv2()
     if cv2 is None:
         raise RuntimeError(
-            "OpenCV (cv2) が見つかりません。--backend tk で再試行してください。"
+            "OpenCV (cv2) が見つかりません。--backend tk で再試行するか、\n"
+            "'pip install edsdk-python[display]' または 'pip install -r requirements-examples.txt' を実行してください。"
         )
     try:
         import numpy as np  # type: ignore
     except Exception:
-        raise RuntimeError("NumPy が必要です。'pip install numpy' を実行してください。")
+        raise RuntimeError(
+            "NumPy が必要です。'pip install edsdk-python[display]' または\n"
+            "'pip install numpy' を実行してください。"
+        )
 
     window = args.window
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
@@ -75,7 +79,8 @@ def _display_with_tk(cam: CameraController, args) -> None:
         import tkinter as tk
     except Exception:  # pragma: no cover - optional path
         raise RuntimeError(
-            "Tkinter/Pillow が見つかりません。OpenCV をインストールするか --backend opencv を使用してください。"
+            "Tkinter/Pillow が見つかりません。OpenCV をインストールするか --backend opencv を使用してください。\n"
+            "'pip install edsdk-python[display]' または 'pip install Pillow' を実行してください。"
         )
 
     root = tk.Tk()

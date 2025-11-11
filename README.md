@@ -4,7 +4,35 @@ Python wrapper for Canon EOS Digital Software Development Kit, aka EDSDK.
 
 Currently, it supports Windows only. But it shouldn't be difficult to adapt it for macOS.
 
-# How to build
+## Installation and usage
+
+## Quick install (core only)
+
+```cmd
+pip install edsdk-python
+```
+
+This installs only the core package and the Windows dependency (pywin32). Examples that use live view display may require extra libraries.
+
+## Install optional dependencies for examples/display
+
+- Via extras:
+
+```cmd
+pip install edsdk-python[display]
+# or
+pip install edsdk-python[examples]
+```
+
+- Or via a requirements file in this repo:
+
+```cmd
+pip install -r requirements-examples.txt
+```
+
+Typical extras include: numpy, opencv-python, Pillow.
+
+## How to build
 
 ## Obtain the EDSDK from Canon
 
@@ -25,12 +53,13 @@ Once you were granted access - this may take a few days - download the latest ve
 You should now have access to a zip file containing the file you need to build this library.
 
 Unzip the file and copy the following folders inside the `dependencies` folder of this project:
+
 1. `EDSDK` - Containing headers and 32-bit libraries (we only use the headers!)
 2. `EDSDK_64` - Containing 64-bit version of the .lib and .dlls (which we do use!)
 
 Your dependencies folder structure should now look like this:
 
-```
+```text
 dependencies/EDSDK/Header/EDSDK.h
 dependencies/EDSDK/Header/EDSDKErrors.h
 dependencies/EDSDK/Header/EDSDKTypes.h
@@ -69,10 +98,16 @@ You can comment out `Unknown` or rename it to `UNKNOWN` (or whatever you want) o
 
 Run:
 
-```bash
+```cmd
 pip install .
 ```
 
-## Throubleshooting
+## Troubleshooting
 
-C2365: 'Unknown': redefinition; previous definition was 'enumerator' : go to the section [Modify EDSDKTypes.h](#modify-edsdktypesh) and follow the instructions.
+If you see errors like:
+
+- C2365: 'Unknown': redefinition; previous definition was 'enumerator'
+    Follow [Modify EDSDKTypes.h](#modify-edsdktypesh).
+
+- "OpenCV (cv2) not found" when running examples
+    Install extras: `pip install edsdk-python[display]` or `pip install -r requirements-examples.txt`.
