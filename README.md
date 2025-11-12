@@ -38,6 +38,8 @@ Typical extras include: numpy, opencv-python, Pillow.
 
 ## How to build
 
+Note: Build/metadata is managed via `pyproject.toml` (PEP 621). `setup.py` is kept as a thin shim for the C++ extension build compatibility.
+
 ## Obtain the EDSDK from Canon
 
 Before you can use this library you need to obtain the EDSDK library from Canon. You can do so via their developers program:
@@ -104,6 +106,12 @@ Run (this will compile the C++ extension against your current Python, e.g. 3.13)
 
 ```cmd
 pip install .
+```
+or
+```cmd
+pip install .[examples]
+or
+pip install .[display]
 ```
 
 To generate a wheel (recommended for distribution / reuse):

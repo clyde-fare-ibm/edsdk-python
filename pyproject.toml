@@ -5,4 +5,66 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
-# Note: Project metadata and extension configuration are defined in setup.py.
+# PEP 621 project metadata moved here. setup.py now only builds the Extension.
+
+[project]
+name = "edsdk-python"
+version = "0.1.1"  # Python 3.13 対応追加バージョン
+description = "Python wrapper for Canon EDSDK Library"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [ { name = "Francesco Leacche", email = "francescoleacche@gmail.com" } ]
+keywords = ["edsdk", "canon", "camera", "dslr"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Environment :: Win32 (MS Windows)",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: System :: Hardware :: Universal Serial Bus (USB)",
+  "Typing :: Stubs Only",
+]
+
+dependencies = [
+  'pywin32 >= 228 ; platform_system == "Windows"'
+]
+
+[project.optional-dependencies]
+display = [
+  "numpy>=1.24",
+  "opencv-python>=4.9",
+  "Pillow>=10.0",
+]
+examples = [
+  "numpy>=1.24",
+  "opencv-python>=4.9",
+  "Pillow>=10.0",
+]
+dev = [
+  "pytest>=7.4",
+  "mypy>=1.8",
+  "black>=23.12",
+]
+
+[tool.setuptools]
+packages = { find = { where = ["."], include = ["edsdk*"], exclude = ["examples"] } }
+
+[tool.setuptools.package-data]
+edsdk = ["py.typed", "api.pyi"]
+
+[tool.setuptools.data-files]
+"Lib/site-packages/edsdk" = [
+  "dependencies/EDSDK_64/Dll/EDSDK.dll",
+  "dependencies/EDSDK_64/Dll/EdsImage.dll",
+]
+
+# C++ Extension is defined in setup.py (experimental TOML form removed due to parsing issues)
