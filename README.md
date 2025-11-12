@@ -6,40 +6,6 @@ Supported Python versions: 3.8 â€“ 3.13 (CPython, Windows 64-bit). Python 3.13 ã
 
 Currently, it supports Windows only. But it shouldn't be difficult to adapt it for macOS.
 
-## Installation and usage
-
-If you need wheels for Python 3.13, build locally as described below or wait for the published release (version >= 0.1.1).
-
-## Quick install (core only)
-
-```cmd
-pip install edsdk-python
-```
-
-This installs only the core package and the Windows dependency (pywin32). Examples that use live view display may require extra libraries.
-
-## Install optional dependencies for examples/display
-
-- Via extras:
-
-```cmd
-pip install edsdk-python[display]
-# or
-pip install edsdk-python[examples]
-```
-
-- Or via a requirements file in this repo:
-
-```cmd
-pip install -r requirements-examples.txt
-```
-
-Typical extras include: numpy, opencv-python, Pillow.
-
-## How to build
-
-Note: Build/metadata is managed via `pyproject.toml` (PEP 621). `setup.py` is kept as a thin shim for the C++ extension build compatibility.
-
 ## Obtain the EDSDK from Canon
 
 Before you can use this library you need to obtain the EDSDK library from Canon. You can do so via their developers program:
