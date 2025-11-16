@@ -734,8 +734,19 @@ class CameraController:
             retry_delay=retry_delay,
             keep_files=keep_files,
         ):
-            img = Image.open(io.BytesIO(b))
-            img.load()  # fully load to detach from BytesIO
+            try:
+                img = Image.open(io.BytesIO(b))
+                img.load()  # fully load to detach from BytesIO
+            except Exception as e:
+                # 代表的なケース: カメラがRAW(CR3など)で記録しており、
+                # capture_bytes() がRAWそのものを返しているため Pillow が読めない。
+                print(
+                    "capture_pil() での読み込みに失敗しました。"
+                    "多くの場合、カメラ側の画質設定がRAWのみになっているのが原因です。\n"
+                    "カメラメニューで画質をJPEGまたはJPEG+RAWに変更してから再実行してください。\n"
+                    f"Pillow 側の例外: {e}"
+                )
+                raise
             images.append(img)
         return images
 
