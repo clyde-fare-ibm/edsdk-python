@@ -72,11 +72,12 @@ Run (this will compile the C++ extension against your current Python, e.g. 3.13)
 ```cmd
 pip install .
 ```
-or
+
+To use example programs:
 ```cmd
 pip install .[examples]
 or
-pip install .[display]
+uv sync --extra examples
 ```
 
 To generate a wheel (recommended for distribution / reuse):
