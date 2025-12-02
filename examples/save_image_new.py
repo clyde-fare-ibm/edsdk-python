@@ -12,6 +12,25 @@ AEモードは多くの機種でSDKから変更不可のため指定していま
 from edsdk.camera_controller import CameraController
 import rawtopng
 import cv2
+import PIL.Image as Image
+import numpy as np
+
+
+def raw_processor(raw_bytes: bytes) -> Image.Image:
+    import io
+    import rawpy
+
+    print("raw image to PNG image...")
+    # raw画像を現像
+    with rawpy.imread(io.BytesIO(raw_bytes)) as rawData:
+        rgb = rawData.postprocess(
+            use_camera_wb=True,
+            no_auto_bright=True,
+            bright=5.0,
+            gamma=(1.0, 1.0),
+        )
+    return Image.fromarray(rgb)
+
 
 # プロパティイベント警告を抑制したい場合は register_property_events=False を指定
 with CameraController(
@@ -77,5 +96,13 @@ with CameraController(
         # cv_img のdepthやshapeを確認したい場合:
         print(cv_img.dtype, cv_img.shape)
         cv2.imshow("Captured Image", cv_img)
+        cv2.waitKey(1000)
+        cv2.destroyAllWindows()
+
+    # example7: RAW画像を指定したプロセッサで現像してPIL形式で取得
+    pil_imgs = cam.capture_pil(raw_processor=raw_processor)
+    for img in pil_imgs:
+        bgr_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        cv2.imshow("Captured Image (PIL)", bgr_img)
         cv2.waitKey(1000)
         cv2.destroyAllWindows()
