@@ -99,6 +99,7 @@ with CameraController(
         cv2.waitKey(1000)
         cv2.destroyAllWindows()
 
+    # example7: RAW画像を指定したプロセッサで現像してPIL形式で取得
     pil_imgs = cam.capture_pil(raw_processor=raw_processor)
     for img in pil_imgs:
         bgr_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
