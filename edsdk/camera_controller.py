@@ -6,7 +6,19 @@ import io
 import asyncio
 import time
 import uuid
-from typing import Callable, Dict, List, Optional, Tuple, Union, TYPE_CHECKING, Type
+import inspect
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+    TYPE_CHECKING,
+    Type,
+    runtime_checkable,
+)
 
 # Only imported for type checking to avoid runtime cost if deps not installed
 if TYPE_CHECKING:  # pragma: no cover
@@ -46,6 +58,130 @@ from edsdk.constants.properties import (
 ObjectCallback = Callable[["ObjectEvent", "EdsObject"], int]
 PropertyCallback = Callable[["PropertyEvent", "PropID", int], int]
 LiveViewData = Union[bytes, str]
+
+
+@runtime_checkable
+class RawProcessor(Protocol):
+    """Protocol for RAW image development callbacks.
+
+    Implement a function or callable object with this signature to process
+    RAW image data from the camera.
+
+    Args:
+        raw_bytes: Binary data of the RAW file (e.g., CR2, CR3).
+
+    Returns:
+        Developed image as PIL.Image.Image (RGB mode recommended).
+
+    Example using rawpy:
+        ```python
+        import io
+        import rawpy
+        from PIL import Image
+
+        def develop_raw(raw_bytes: bytes) -> Image.Image:
+            with rawpy.imread(io.BytesIO(raw_bytes)) as raw:
+                rgb = raw.postprocess(
+                    use_camera_wb=True,
+                    output_bps=8,
+                )
+            return Image.fromarray(rgb)
+
+        # Usage
+        with CameraController() as cam:
+            images = cam.capture_pil(raw_processor=develop_raw)
+        ```
+
+    Example with custom settings:
+        ```python
+        class MyRawProcessor:
+            def __init__(self, gamma: float = 2.2):
+                self.gamma = gamma
+
+            def __call__(self, raw_bytes: bytes) -> Image.Image:
+                import io
+                import rawpy
+                import numpy as np
+                from PIL import Image
+
+                with rawpy.imread(io.BytesIO(raw_bytes)) as raw:
+                    rgb = raw.postprocess(gamma=(1, 1), output_bps=16)
+
+                # Apply custom gamma
+                rgb_float = rgb.astype(np.float32) / 65535.0
+                rgb_gamma = np.power(rgb_float, 1.0 / self.gamma)
+                rgb_8bit = (rgb_gamma * 255).clip(0, 255).astype(np.uint8)
+
+                return Image.fromarray(rgb_8bit)
+
+        # Usage
+        processor = MyRawProcessor(gamma=2.4)
+        images = cam.capture_pil(raw_processor=processor)
+        ```
+    """
+
+    def __call__(self, raw_bytes: bytes) -> "Image.Image":
+        """Process RAW bytes and return developed PIL Image."""
+        ...
+
+
+def _validate_raw_processor(processor: object) -> None:
+    """Validate that processor conforms to RawProcessor protocol.
+
+    Args:
+        processor: Object to validate.
+
+    Raises:
+        TypeError: If processor is not callable or has wrong signature.
+    """
+    if not callable(processor):
+        raise TypeError(
+            "raw_processor must be callable.\n"
+            "Expected signature: (raw_bytes: bytes) -> PIL.Image.Image\n"
+            "See RawProcessor docstring for implementation examples."
+        )
+
+    # Check signature if possible
+    try:
+        sig = inspect.signature(processor)
+        params = [
+            p
+            for p in sig.parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        # Should have exactly 1 required positional parameter
+        if len(params) != 1:
+            raise TypeError(
+                f"raw_processor must accept exactly 1 required argument (raw_bytes), "
+                f"but got {len(params)} required argument(s).\n"
+                "Expected signature: (raw_bytes: bytes) -> PIL.Image.Image"
+            )
+    except (ValueError, TypeError):
+        # Some built-in callables don't support signature inspection
+        pass
+
+
+# RAW type codes in upper 16 bits of ImageQuality
+# 0x0064: RAW (CR2/CR3), 0x0164: MRAW (SRAW1), 0x0264: SRAW (SRAW2), 0x0063: CRAW
+_RAW_QUALITY_PREFIXES = frozenset({0x0064, 0x0164, 0x0264, 0x0063})
+
+# File extensions for RAW images (fallback check)
+RAW_EXTENSIONS = frozenset(
+    {
+        ".cr2",
+        ".cr3",  # Canon
+        ".nef",  # Nikon
+        ".arw",  # Sony
+        ".dng",  # Adobe DNG
+        ".orf",  # Olympus
+        ".rw2",  # Panasonic
+        ".pef",  # Pentax
+        ".srw",  # Samsung
+        ".raf",  # Fujifilm
+    }
+)
 
 
 # Windows message pumping for EDSDK callbacks
@@ -219,6 +355,36 @@ def _parse_iso(value: Union[str, int]) -> int:
     if key.isdigit():
         return _parse_iso(int(key))
     raise ValueError(f"Unsupported ISO value: {value}")
+
+
+def _image_quality_includes_raw(quality_code: int) -> bool:
+    """Check if the ImageQuality setting includes RAW capture.
+
+    Args:
+        quality_code: The ImageQuality property value from camera.
+
+    Returns:
+        True if RAW (including CRAW/MRAW/SRAW) is part of the capture.
+    """
+    upper = (quality_code >> 16) & 0xFFFF
+    return upper in _RAW_QUALITY_PREFIXES
+
+
+def _image_quality_is_raw_only(quality_code: int) -> bool:
+    """Check if the ImageQuality setting is RAW-only (no JPEG/HEIF).
+
+    RAW-only values have 0xFF0F in lower 16 bits.
+    """
+    if not _image_quality_includes_raw(quality_code):
+        return False
+    lower = quality_code & 0xFFFF
+    return lower == 0xFF0F
+
+
+def _is_raw_file(path: str) -> bool:
+    """Check if the file is a RAW image based on extension."""
+    _, ext = os.path.splitext(path)
+    return ext.lower() in RAW_EXTENSIONS
 
 
 class CameraController:
@@ -629,6 +795,21 @@ class CameraController:
         except Exception:
             return []
 
+    # ---------- ImageQuality helpers ----------
+    def get_image_quality_code(self) -> int:
+        """Return current ImageQuality property code."""
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        return int(edsdk.GetPropertyData(self._cam, PropID.ImageQuality, 0))
+
+    def includes_raw(self) -> bool:
+        """Check if current ImageQuality setting includes RAW capture."""
+        return _image_quality_includes_raw(self.get_image_quality_code())
+
+    def is_raw_only(self) -> bool:
+        """Check if current ImageQuality setting is RAW-only (no JPEG/HEIF)."""
+        return _image_quality_is_raw_only(self.get_image_quality_code())
+
     # ---------- Capture ----------
     def capture(
         self,
@@ -719,35 +900,119 @@ class CameraController:
         retry: int = 0,
         retry_delay: float = 0.3,
         keep_files: bool = False,
-    ) -> List[Image.Image]:
-        """Capture and return a list of PIL Images (requires Pillow)."""
+        raw_processor: Optional[RawProcessor] = None,
+    ) -> List["Image.Image"]:
+        """Capture and return a list of PIL Images (requires Pillow).
+
+        Args:
+            shots: Number of shots to capture.
+            timeout: Timeout in seconds for each shot transfer.
+            interval: Interval in seconds between shots.
+            retry: Number of retries on timeout.
+            retry_delay: Delay in seconds between retries.
+            keep_files: If True, keep captured files on disk.
+            raw_processor: Callback to develop RAW images.
+                           Must conform to RawProcessor protocol:
+                           (raw_bytes: bytes) -> PIL.Image.Image
+                           Required if camera is set to RAW or RAW+JPEG mode.
+                           See RawProcessor docstring for examples.
+
+        Returns:
+            List of PIL Image objects.
+
+        Raises:
+            ValueError: If RAW capture is enabled but no raw_processor provided.
+            TypeError: If raw_processor has invalid signature.
+            RuntimeError: If Pillow is not installed or camera session not open.
+        """
         try:
             from PIL import Image  # type: ignore
         except Exception as e:
             raise RuntimeError("Pillow (PIL) is required for capture_pil()") from e
-        images: List["Image.Image"] = []
-        for b in self.capture_bytes(
+
+        # Check current ImageQuality setting before capture
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+
+        quality_code = self.get_image_quality_code()
+        includes_raw = _image_quality_includes_raw(quality_code)
+
+        # Validate raw_processor if provided
+        if raw_processor is not None:
+            _validate_raw_processor(raw_processor)
+
+        if includes_raw and raw_processor is None:
+            # Get human-readable name for error message
+            quality_name = "Unknown"
+            for name, member in ImageQuality.__members__.items():
+                if int(member) == quality_code:
+                    quality_name = name
+                    break
+            raise ValueError(
+                f"Camera ImageQuality is set to '{quality_name}' which includes RAW, "
+                "but no raw_processor was provided.\n"
+                "Either pass a raw_processor callback or change camera to JPEG-only mode.\n"
+                "See RawProcessor docstring for implementation examples."
+            )
+
+        # Capture files
+        paths = self.capture(
             shots=shots,
             timeout=timeout,
             interval=interval,
             retry=retry,
             retry_delay=retry_delay,
-            keep_files=keep_files,
-        ):
+        )
+
+        images: List["Image.Image"] = []
+        for p in paths:
             try:
-                img = Image.open(io.BytesIO(b))
-                img.load()  # fully load to detach from BytesIO
+                with open(p, "rb") as f:
+                    raw_bytes = f.read()
+
+                # Determine if this specific file is RAW by extension
+                if _is_raw_file(p):
+                    # RAW file: use processor
+                    if raw_processor is not None:
+                        self._log(
+                            f"Processing RAW file with raw_processor: {os.path.basename(p)}"
+                        )
+                        img = raw_processor(raw_bytes)
+                        # Validate return type
+                        if not isinstance(img, Image.Image):
+                            raise TypeError(
+                                f"raw_processor must return PIL.Image.Image, "
+                                f"but got {type(img).__name__}.\n"
+                                "See RawProcessor docstring for correct implementation."
+                            )
+                    else:
+                        # This shouldn't happen if we checked above, but safety fallback
+                        raise RuntimeError(
+                            f"RAW file detected ({os.path.basename(p)}), "
+                            "but no raw_processor provided."
+                        )
+                else:
+                    # JPEG/HEIF: let Pillow handle it
+                    self._log(f"Loading image with Pillow: {os.path.basename(p)}")
+                    img = Image.open(io.BytesIO(raw_bytes))
+                    img.load()  # fully load to detach from BytesIO
+
+                images.append(img)
             except Exception as e:
-                # 代表的なケース: カメラがRAW(CR3など)で記録しており、
-                # capture_bytes() がRAWそのものを返しているため Pillow が読めない。
-                print(
-                    "capture_pil() での読み込みに失敗しました。"
-                    "多くの場合、カメラ側の画質設定がRAWのみになっているのが原因です。\n"
-                    "カメラメニューで画質をJPEGまたはJPEG+RAWに変更してから再実行してください。\n"
-                    f"Pillow 側の例外: {e}"
-                )
+                # Re-raise with more context
+                if _is_raw_file(p) and raw_processor is None:
+                    raise RuntimeError(
+                        f"Failed to process {os.path.basename(p)}. "
+                        "If this is a RAW file, provide a raw_processor callback."
+                    ) from e
                 raise
-            images.append(img)
+            finally:
+                if not keep_files:
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+
         return images
 
     def capture_numpy(
@@ -759,8 +1024,31 @@ class CameraController:
         retry: int = 0,
         retry_delay: float = 0.3,
         keep_files: bool = False,
+        raw_processor: Optional[RawProcessor] = None,
     ) -> List["np.ndarray"]:
-        """Capture and return a list of numpy arrays (requires numpy)."""
+        """Capture and return a list of numpy arrays (requires numpy).
+
+        Args:
+            shots: Number of shots to capture.
+            timeout: Timeout in seconds for each shot transfer.
+            interval: Interval in seconds between shots.
+            retry: Number of retries on timeout.
+            retry_delay: Delay in seconds between retries.
+            keep_files: If True, keep captured files on disk.
+            raw_processor: Callback to develop RAW images.
+                           Must conform to RawProcessor protocol:
+                           (raw_bytes: bytes) -> PIL.Image.Image
+                           Required if camera is set to RAW or RAW+JPEG mode.
+                           See RawProcessor docstring for examples.
+
+        Returns:
+            List of numpy arrays (RGB format).
+
+        Raises:
+            ValueError: If RAW capture is enabled but no raw_processor provided.
+            TypeError: If raw_processor has invalid signature.
+            RuntimeError: If numpy is not installed or camera session not open.
+        """
         try:
             import numpy as np  # type: ignore
         except Exception as e:
@@ -772,6 +1060,7 @@ class CameraController:
             retry=retry,
             retry_delay=retry_delay,
             keep_files=keep_files,
+            raw_processor=raw_processor,
         )
         return [np.array(im) for im in pil_images]
 
@@ -867,7 +1156,7 @@ class CameraController:
             raise last_exc
         raise RuntimeError("Unexpected live view failure without exception")
 
-    def grab_live_view_pil(self) -> Image.Image:
+    def grab_live_view_pil(self) -> "Image.Image":
         """Grab one live-view frame and return as PIL Image (requires Pillow)."""
         try:
             from PIL import Image  # type: ignore
