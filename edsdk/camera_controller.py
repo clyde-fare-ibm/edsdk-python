@@ -197,6 +197,13 @@ else:  # pragma: no cover - not required outside Windows
 def _pump_messages_once() -> None:
     if pythoncom is not None:
         pythoncom.PumpWaitingMessages()
+        return
+    # On non-Windows platforms, use GetEvent to dispatch SDK events if available.
+    try:
+        if hasattr(edsdk, "GetEvent"):
+            edsdk.GetEvent()
+    except Exception:
+        pass
 
 
 def _save_directory_item(
