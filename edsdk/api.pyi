@@ -573,3 +573,15 @@ def GetEvent() -> None:
     :raises EdsError: Any of the sdk errors.
     """
     ...
+
+def SetFramePoint(
+    camera: EdsObject, point: Tuple[int, int], lock_af_frame: bool = False
+) -> None:
+    """Specifies the camera's focus and zoom frame position in LiveView state.
+
+    :param EdsObject camera: The camera object.
+    :param Tuple[int, int] point: (x, y) position in the LiveView frame.
+    :param bool lock_af_frame: Lock the AF frame until AF operation is executed.
+    :raises EdsError: Any of the sdk errors.
+    """
+    ...

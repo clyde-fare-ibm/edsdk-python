@@ -197,6 +197,54 @@ static PyObject* PyEds_TerminateSDK(PyObject *Py_UNUSED(self)) {
 }
 
 
+PyDoc_STRVAR(PyEds_SetFramePoint__doc__,
+"Specifies the camera's focus and zoom frame position in LiveView state.\n\n"
+":param EdsObject camera: The camera object.\n"
+":param Tuple[int, int] point: (x, y) position in the LiveView frame.\n"
+":param bool lock_af_frame: Lock the AF frame until AF operation is executed.\n"
+":raises EdsError: Any of the sdk errors.");
+
+static PyObject* PyEds_SetFramePoint(PyObject *Py_UNUSED(self), PyObject *args) {
+    PyObject *pyObj;
+    PyObject *pyPoint;
+    int lockAfFrame = 0;
+
+    if (!PyArg_ParseTuple(args, "OO|p:EdsSetFramePoint", &pyObj, &pyPoint, &lockAfFrame)) {
+        return nullptr;
+    }
+    PyEdsObject* edsObj = PyToEds(pyObj);
+    if (!edsObj) {
+        return nullptr;
+    }
+
+    PyObject *seq = PySequence_Fast(pyPoint, "point must be a sequence (x, y)");
+    if (!seq) {
+        return nullptr;
+    }
+    if (PySequence_Fast_GET_SIZE(seq) != 2) {
+        Py_DECREF(seq);
+        PyErr_Format(PyExc_ValueError, "point must contain exactly 2 values");
+        return nullptr;
+    }
+    PyObject *pyX = PySequence_Fast_GET_ITEM(seq, 0);
+    PyObject *pyY = PySequence_Fast_GET_ITEM(seq, 1);
+    if (!PyLong_Check(pyX) || !PyLong_Check(pyY)) {
+        Py_DECREF(seq);
+        PyErr_Format(PyExc_TypeError, "point values must be integers");
+        return nullptr;
+    }
+
+    EdsPoint point;
+    point.x = static_cast<EdsInt32>(PyLong_AsLong(pyX));
+    point.y = static_cast<EdsInt32>(PyLong_AsLong(pyY));
+    Py_DECREF(seq);
+
+    unsigned long retVal(EdsSetFramePoint(edsObj->edsObj, point, lockAfFrame != 0));
+    PyCheck_EDSERROR(retVal);
+    Py_RETURN_NONE;
+}
+
+
 /******************************************************************************
 *******************************************************************************
 //
@@ -2306,7 +2354,7 @@ PyMethodDef methodTable[] = {
 
     // {"CreateStream", (PyCFunction) PyEds_CreateStream, METH_O, PyEds_CreateStream__doc__},
     {"GetEvent", (PyCFunction) PyEds_GetEvent, METH_NOARGS, PyEds_GetEvent__doc__},
-    // {"SetFramePoint", (PyCFunction) PyEds_SetFramePoint, METH_VARARGS, PyEds_SetFramePoint__doc__},
+    {"SetFramePoint", (PyCFunction) PyEds_SetFramePoint, METH_VARARGS, PyEds_SetFramePoint__doc__},
 
     {nullptr, nullptr, 0, nullptr} // Sentinel value ending the table
 };
