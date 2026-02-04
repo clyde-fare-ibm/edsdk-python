@@ -467,6 +467,7 @@ class CameraController:
             )
         cam = edsdk.GetChildAtIndex(cam_list, self.index)
         edsdk.OpenSession(cam)
+        self._cam = cam
 
         # Event handlers (property event can be suppressed to avoid noisy warnings)
         edsdk.SetObjectEventHandler(cam, ObjectEvent.All, self._on_object_event)
@@ -500,7 +501,7 @@ class CameraController:
                 self.prepare_flash()
             except Exception as e:
                 self._log(f"Flash control unavailable: {e}")
-        self._cam = cam
+      
         self._log("Camera session opened")
         return self
 
@@ -1201,9 +1202,10 @@ class CameraController:
                     )
                     evf_image = edsdk.CreateEvfImageRef(out_stream)
                     edsdk.DownloadEvfImage(self._cam, evf_image)
-                    self._log(
-                        f"Live view saved: {save_path} (attempt {attempt}/{MAX_ATTEMPTS})"
-                    )
+                    # too many logs when we stream the live view to ffmpeg
+                    #self._log(
+                    #    f"Live view saved: {save_path} (attempt {attempt}/{MAX_ATTEMPTS})"
+                    #)
                     return save_path
                 # Fallback: save to temp file and read bytes
                 tmp_path = os.path.join(self.save_dir, f"evf_{uuid.uuid4().hex}.jpg")
