@@ -666,8 +666,8 @@ class CameraController:
             self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
 
         try:
-            ae_mode_code = edsdk.GetPropertyData(self._cam, PropID.AEMode, 0)
-            ae_mode = AEMode(ae_mode_code)
+            ae_mode_str = edsdk.GetPropertyData(self._cam, PropID.AEMode, 0)
+            ae_mode = AEMode(_AV_STR_TO_CODE[ae_mode_str])
             if ae_mode not in _CREATIVE_AE_MODES:
                 self._log(
                     "Flash control limited in AEMode="
