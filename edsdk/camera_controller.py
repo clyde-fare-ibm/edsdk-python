@@ -479,7 +479,7 @@ class CameraController:
             )
         cam = edsdk.GetChildAtIndex(cam_list, self.index)
         edsdk.OpenSession(cam)
-        self._cam = cam
+      
 
         # Event handlers (property event can be suppressed to avoid noisy warnings)
         edsdk.SetObjectEventHandler(cam, ObjectEvent.All, self._on_object_event)
@@ -513,6 +513,7 @@ class CameraController:
             except Exception as e:
                 self._log(f"Flash control unavailable: {e}")
       
+        self._cam = cam
         self._log("Camera session opened")
         return self
 
@@ -659,23 +660,12 @@ class CameraController:
         """Configure flash settings via the flash settings object."""
         if self._cam is None:
             raise RuntimeError("Camera session not open")
-        if not self.ui_locked:
-            raise RuntimeError("UI must be locked to prepare flash")
+
 
         if self._flash_ref is None:
             self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
 
         try:
-            ae_mode_str = edsdk.GetPropertyData(self._cam, PropID.AEMode, 0)
-            self._log(f"AEMode: {ae_mode_str}")
-            ae_mode = AEMode(_parse_av(ae_mode_str))
-            self._log(f"AEMode: {ae_mode}")
-            if ae_mode not in _CREATIVE_AE_MODES:
-                self._log(
-                    "Flash control limited in AEMode="
-                    f"{ae_mode.name}; switch to a creative mode."
-                )
-
             edsdk.SetPropertyData(
                 self._flash_ref,
                 PropID.Flash_Target,

@@ -833,14 +833,14 @@ class FlashModeSynchroTiming(IntEnum):
 
 # PropID.Flash_Target
 class FlashTarget(IntEnum):
-    Unspecified = 0
-    ExternalFlash = 1
+    Unspecified = 0x00
+    ExternalFlash = 0x01
 
 
 # PropID.Flash_Firing
 class FlashFiring(IntEnum):
-    Off = 0
-    Fire = 1
+    Off = 0x00
+    Fire = 0x01
 
 
 # PropID.RedEye
