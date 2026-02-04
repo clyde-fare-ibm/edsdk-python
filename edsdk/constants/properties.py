@@ -11,6 +11,7 @@ class PropID(IntEnum):
     DateTime = 0x00000006
     FirmwareVersion = 0x00000007
     BatteryLevel = 0x00000008
+    Unknown_0x00000009 = 0x00000009
     SaveTo = 0x0000000B
     CurrentStorage = 0x0000000C
     CurrentFolder = 0x0000000D
