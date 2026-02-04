@@ -62,6 +62,17 @@ ObjectCallback = Callable[["ObjectEvent", "EdsObject"], int]
 PropertyCallback = Callable[["PropertyEvent", "PropID", int], int]
 LiveViewData = Union[bytes, str]
 
+_CREATIVE_AE_MODES = {
+    AEMode.Program,
+    AEMode.Tv,
+    AEMode.Av,
+    AEMode.Manual,
+    AEMode.Bulb,
+    AEMode.A_DEP,
+    AEMode.DEP,
+    AEMode.Custom,
+}
+
 
 @runtime_checkable
 class RawProcessor(Protocol):
@@ -655,6 +666,14 @@ class CameraController:
             self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
 
         try:
+            ae_mode_code = edsdk.GetPropertyData(self._cam, PropID.AEMode, 0)
+            ae_mode = AEMode(ae_mode_code)
+            if ae_mode not in _CREATIVE_AE_MODES:
+                self._log(
+                    "Flash control limited in AEMode="
+                    f"{ae_mode.name}; switch to a creative mode."
+                )
+
             edsdk.SetPropertyData(
                 self._flash_ref,
                 PropID.Flash_Target,
@@ -670,7 +689,39 @@ class CameraController:
             time.sleep(1)
             
         except Exception as e:
-            self._log(f"Error setting flash target: {e}")
+            info = classify_error(e)
+            self._log(f"Error setting flash target: {info}")
+            msg = str(info.get("message", "")).upper()
+            if "PROPERTIES_UNAVAILABLE" in msg:
+                self._log(
+                    "Flash properties unavailable; ensure external flash is powered "
+                    "on and camera is in a creative mode before session start."
+                )
+                try:
+                    edsdk.SetPropertyData(
+                        self._cam,
+                        PropID.Flash_Target,
+                        0,
+                        int(self._flash_target),
+                    )
+                    time.sleep(0.5)
+                    self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
+                    edsdk.SetPropertyData(
+                        self._flash_ref,
+                        PropID.Flash_Target,
+                        0,
+                        int(self._flash_target),
+                    )
+                    edsdk.SetPropertyData(
+                        self._flash_ref,
+                        PropID.Flash_Firing,
+                        0,
+                        int(self._flash_firing),
+                    )
+                except Exception as retry_exc:
+                    self._log(
+                        f"Retry flash settings failed: {classify_error(retry_exc)}"
+                    )
             
 
     # ---------- Properties ----------
