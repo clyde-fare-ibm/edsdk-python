@@ -430,6 +430,7 @@ class CameraController:
         self.save_to = save_to
         self.auto_capacity = auto_capacity
         self.verbose = verbose
+        self.ui_locked = False
         self._log = logger or (print if verbose else (lambda *_args, **_kw: None))
         self._cam: Optional[EdsObject] = None
         self._saved_paths: List[str] = []
@@ -498,6 +499,7 @@ class CameraController:
                     edsdk.SetPropertyEventHandler(
                         self._flash_ref, PropertyEvent.All, self._on_flash_property_event
                     )
+                time.sleep(0.1)
                 self.prepare_flash()
             except Exception as e:
                 self._log(f"Flash control unavailable: {e}")
@@ -648,12 +650,12 @@ class CameraController:
         """Configure flash settings via the flash settings object."""
         if self._cam is None:
             raise RuntimeError("Camera session not open")
+        if not self.ui_locked:
+            raise RuntimeError("UI must be locked to prepare flash")
+
         if self._flash_ref is None:
             self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
-        try:
-            edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UILock, 1)
-        except Exception:
-            self._log(f"Error locking UI: {e}")
+
         try:
             edsdk.SetPropertyData(
                 self._flash_ref,
@@ -667,14 +669,11 @@ class CameraController:
                 0,
                 int(self._flash_firing),
             )
+            time.sleep(1)
+            
         except Exception as e:
             self._log(f"Error setting flash target: {e}")
             
-        finally:
-            try:
-                edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UIUnLock, 0)
-            except Exception:
-                pass
 
     # ---------- Properties ----------
     def set_properties(
@@ -899,6 +898,19 @@ class CameraController:
     def is_raw_only(self) -> bool:
         """Check if current ImageQuality setting is RAW-only (no JPEG/HEIF)."""
         return _image_quality_is_raw_only(self.get_image_quality_code())
+
+    # ---------- UI Lock/Unlock ----------
+    def lock_ui(self) -> None:
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UILock, 1)
+        self.ui_locked = True
+
+    def unlock_ui(self) -> None:
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UIUnLock, 0)
+        self.ui_locked = False
 
     # ---------- Capture ----------
     def capture(
