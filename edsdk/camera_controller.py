@@ -37,6 +37,7 @@ from edsdk import (
     PropID,
     PropertyEvent,
 )
+from edsdk.constants.generic import CameraStatusCommand
 from edsdk.constants.properties import (
     Av as AvTable,
     Tv as TvTable,
@@ -51,6 +52,8 @@ from edsdk.constants.properties import (
     PropID as _PropIDEnum,
     AFMode,
     EvfAFMode,
+    FlashFiring,
+    FlashTarget,
 )
 
 
@@ -415,6 +418,10 @@ class CameraController:
         verbose: bool = False,
         logger: Optional[Callable[[str], None]] = None,
         register_property_events: bool = True,
+        enable_flash_control: bool = False,
+        flash_target: FlashTarget = FlashTarget.ExternalFlash,
+        flash_firing: FlashFiring = FlashFiring.Fire,
+        register_flash_events: bool = True,
         file_pattern: Optional[str] = None,
         seq_start: int = 1,
     ) -> None:
@@ -428,16 +435,22 @@ class CameraController:
         self._saved_paths: List[str] = []
         self._obj_cb: Optional[ObjectCallback] = None
         self._prop_cb: Optional[PropertyCallback] = None
+        self._flash_prop_cb: Optional[PropertyCallback] = None
         self._live_view_on: bool = False
         # asyncio event queue support
         self._async_queue: Optional[asyncio.Queue[Dict[str, Union[str, int]]]] = None
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
         self._async_pumping: bool = False
         self._register_property_events = register_property_events
+        self._enable_flash_control = enable_flash_control
+        self._flash_target = flash_target
+        self._flash_firing = flash_firing
+        self._register_flash_events = register_flash_events
         self._file_pattern = file_pattern
         self._seq = int(seq_start)
         # One-shot explicit filename (base name); if set, next capture uses this name
         self._next_filename: Optional[str] = None
+        self._flash_ref: Optional[EdsObject] = None
 
     # ---------- Lifecycle ----------
     def __enter__(self) -> "CameraController":
@@ -477,6 +490,16 @@ class CameraController:
                     "numberOfFreeClusters": 2_147_483_647,
                 },
             )
+        if self._enable_flash_control:
+            try:
+                self._flash_ref = edsdk.CreateFlashSettingRef(cam)
+                if self._register_flash_events:
+                    edsdk.SetPropertyEventHandler(
+                        self._flash_ref, PropertyEvent.All, self._on_flash_property_event
+                    )
+                self.prepare_flash()
+            except Exception as e:
+                self._log(f"Flash control unavailable: {e}")
         self._cam = cam
         self._log("Camera session opened")
         return self
@@ -494,6 +517,7 @@ class CameraController:
             except Exception:
                 pass
         self._cam = None
+        self._flash_ref = None
         self._log("Camera session closed")
 
     # ---------- Event handlers ----------
@@ -502,6 +526,9 @@ class CameraController:
 
     def on_property(self, fn: PropertyCallback) -> None:
         self._prop_cb = fn
+
+    def on_flash_property(self, fn: PropertyCallback) -> None:
+        self._flash_prop_cb = fn
 
     def _on_object_event(self, event: ObjectEvent, object_handle: EdsObject) -> int:
         if event == ObjectEvent.DirItemRequestTransfer:
@@ -592,6 +619,61 @@ class CameraController:
         except Exception:
             pass
         return 0
+
+    def _on_flash_property_event(
+        self, event: PropertyEvent, prop_id: PropID, param: int
+    ) -> int:
+        if self._flash_prop_cb:
+            try:
+                return int(self._flash_prop_cb(event, prop_id, param))
+            except Exception:
+                return 0
+        try:
+            self._enqueue_async_event(
+                {
+                    "kind": "flash_property",
+                    "event": event.name if hasattr(event, "name") else int(event),
+                    "property": prop_id.name
+                    if hasattr(prop_id, "name")
+                    else int(prop_id),
+                    "param": int(param),
+                }
+            )
+        except Exception:
+            pass
+        return 0
+
+    def prepare_flash(self) -> None:
+        """Configure flash settings via the flash settings object."""
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        if self._flash_ref is None:
+            self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
+        try:
+            edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UILock, 1)
+        except Exception:
+            self._log(f"Error locking UI: {e}")
+        try:
+            edsdk.SetPropertyData(
+                self._flash_ref,
+                PropID.Flash_Target,
+                0,
+                int(self._flash_target),
+            )
+            edsdk.SetPropertyData(
+                self._flash_ref,
+                PropID.Flash_Firing,
+                0,
+                int(self._flash_firing),
+            )
+        except Exception as e:
+            self._log(f"Error setting flash target: {e}")
+            
+        finally:
+            try:
+                edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UIUnLock, 0)
+            except Exception:
+                pass
 
     # ---------- Properties ----------
     def set_properties(
