@@ -46,7 +46,7 @@ include_dir = edsdk_root / "Header"
 extra_compile_args = ["/W4", "/DDEBUG=0"]
 extra_link_args = []
 if platform.system() == "Linux":
-    extra_compile_args = ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+    extra_compile_args = ["-Wall", "-Wextra", "-Wno-unused-parameter", "-DTARGET_OS_LINUX"]
     extra_link_args = [f"-Wl,-rpath,{library_dir}"]
 
 extension = Extension(

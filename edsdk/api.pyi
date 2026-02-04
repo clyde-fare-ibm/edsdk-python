@@ -34,6 +34,15 @@ def TerminateSDK() -> None:
     """
     ...
 
+def CreateFlashSettingRef(camera: EdsObject) -> EdsObject:
+    """Creates an object for flash settings.
+
+    :param EdsObject camera: The camera object.
+    :raises EdsError: Any of the sdk errors.
+    :return EdsObject: The flash settings object.
+    """
+    ...
+
 def GetChildCount(parent: EdsObject) -> int:
     """Gets the number of child objects of the designated object.
     Example: Number of files in a directory

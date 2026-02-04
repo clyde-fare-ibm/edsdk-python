@@ -70,6 +70,8 @@ class PropID(IntEnum):
     FlashOn = 0x00000412
     RedEye = 0x00000413
     FlashMode = 0x00000414
+    Flash_Firing = 0x0000200D
+    Flash_Target = 0x0000201E
     LensStatus = 0x00000416
     Artist = 0x00000418
     Copyright = 0x00000419
@@ -826,6 +828,18 @@ class FlashModeSynchroTiming(IntEnum):
     FirstCurtain = 0
     SecondCurtain = 1
     InvalidValue = 0xFFFFFFFF
+
+
+# PropID.Flash_Target
+class FlashTarget(IntEnum):
+    Unspecified = 0
+    ExternalFlash = 1
+
+
+# PropID.Flash_Firing
+class FlashFiring(IntEnum):
+    Off = 0
+    Fire = 1
 
 
 # PropID.RedEye

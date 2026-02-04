@@ -2,9 +2,9 @@
 
 Python wrapper for Canon EOS Digital Software Development Kit, aka EDSDK.
 
-Supported Python versions: 3.8 – 3.13 (CPython, Windows 64-bit). Python 3.13 での動作を確認済みです。
+Supported Python versions: 3.8 – 3.13 (CPython, Windows 64-bit and Linux). Python 3.13 での動作を確認済みです。
 
-Currently, it supports Windows only. But it shouldn't be difficult to adapt it for macOS.
+Windows and Linux are supported. On Linux the EDSDK shared library `libEDSDK.so` must be available in the system library search path (or provided via `EDSDK_PATH`/`EDSDK_ROOT` and `LD_LIBRARY_PATH`).
 
 ## Obtain the EDSDK from Canon
 
@@ -24,22 +24,31 @@ Once you were granted access - this may take a few days - download the latest ve
 
 You should now have access to a zip file containing the file you need to build this library.
 
-Unzip the file and copy the following folders inside the `dependencies` folder of this project:
+Unzip the file and place the SDK files in the expected layout (or set `EDSDK_PATH`/`EDSDK_ROOT` to wherever you installed them):
 
-1. `EDSDK` - Containing headers and 32-bit libraries (we only use the headers!)
+Linux:
+1. `EDSDK` - Containing headers
+2. `Library` - Containing `libEDSDK.so` (x86_64/ARM64/ARM32)
+
+Windows:
+1. `EDSDK` - Containing headers (we only use the headers!)
 2. `EDSDK_64` - Containing 64-bit version of the .lib and .dlls (which we do use!)
 
-Your dependencies folder structure should now look like this:
+Your folder structure should now look like this:
 
 ```text
 dependencies/EDSDK/Header/EDSDK.h
 dependencies/EDSDK/Header/EDSDKErrors.h
 dependencies/EDSDK/Header/EDSDKTypes.h
 
+and for windows:
+
 dependencies/EDSDK_64/Dll/EDSDK.dll
 dependencies/EDSDK_64/Dll/EdsImage.dll
-
 dependencies/EDSDK_64/Library/EDSDK.lib
+
+for linux:
+/usr/local/lib/libEDSDK.so
 ```
 
 Any additional files aren't needed, but won't hurt either in case you copied the entire folders.

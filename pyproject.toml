@@ -20,6 +20,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Intended Audience :: Developers",
   "Environment :: Win32 (MS Windows)",
+  "Operating System :: POSIX :: Linux",
   "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -56,11 +57,5 @@ packages = { find = { where = ["."], include = ["edsdk*"], exclude = ["examples"
 
 [tool.setuptools.package-data]
 edsdk = ["py.typed", "api.pyi"]
-
-[tool.setuptools.data-files]
-"Lib/site-packages/edsdk" = [
-  "dependencies/EDSDK_64/Dll/EDSDK.dll",
-  "dependencies/EDSDK_64/Dll/EdsImage.dll",
-]
 
 # C++ Extension is defined in setup.py (experimental TOML form removed due to parsing issues)

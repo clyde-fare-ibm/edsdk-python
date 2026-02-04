@@ -1,6 +1,25 @@
 #include "edsdk_python.h"
 #include "datetime.h"
 
+#include <cstring>
+
+#if defined(TARGET_OS_LINUX) && !defined(_WIN32)
+typedef long long __int64;
+typedef unsigned long long __int64u;
+#define __int64 __int64
+#ifndef WCHAR
+typedef wchar_t WCHAR;
+#endif
+static inline void edsdk_memcpy(void* dst, size_t dst_size, const void* src, size_t src_size) {
+    (void)dst_size;
+    std::memcpy(dst, src, src_size);
+}
+#else
+static inline void edsdk_memcpy(void* dst, size_t dst_size, const void* src, size_t src_size) {
+    memcpy_s(dst, dst_size, src, src_size);
+}
+#endif
+
 #include "EDSDK.h"
 #include "edsdk_utils.h"
 
@@ -197,6 +216,26 @@ static PyObject* PyEds_TerminateSDK(PyObject *Py_UNUSED(self)) {
 }
 
 
+PyDoc_STRVAR(PyEds_CreateFlashSettingRef__doc__,
+"Creates an object for flash settings.\n\n"
+":param EdsObject camera: The camera object.\n"
+":raises EdsError: Any of the sdk errors.\n"
+":return EdsObject: The flash settings object.");
+
+static PyObject* PyEds_CreateFlashSettingRef(PyObject *Py_UNUSED(self), PyObject *pyCam) {
+    PyEdsObject* cam = PyToEds(pyCam);
+    if (!cam) {
+        return nullptr;
+    }
+    EdsFlashRef flashRef;
+    unsigned long retVal(EdsCreateFlashSettingRef(cam->edsObj, &flashRef));
+    PyCheck_EDSERROR(retVal);
+    PyObject *pyFlash = PyEdsObject_New(flashRef);
+    assert(pyFlash);
+    return pyFlash;
+}
+
+
 PyDoc_STRVAR(PyEds_SetFramePoint__doc__,
 "Specifies the camera's focus and zoom frame position in LiveView state.\n\n"
 ":param EdsObject camera: The camera object.\n"
@@ -269,7 +308,7 @@ static PyObject* PyEds_GetChildCount(PyObject *Py_UNUSED(self), PyObject *args) 
     if (!edsObj) {
         return nullptr;
     }
-    unsigned long childCount;
+    EdsUInt32 childCount;
     unsigned long retVal(EdsGetChildCount(edsObj->edsObj, &childCount));
     PyCheck_EDSERROR(retVal);
     return PyLong_FromUnsignedLong(childCount);
@@ -348,7 +387,7 @@ static PyObject* PyEds_GetPropertySize(PyObject *Py_UNUSED(self), PyObject *args
         return nullptr;
     }
     EdsDataType dataType;
-    unsigned long dataSize;
+    EdsUInt32 dataSize;
 
     unsigned long retVal(EdsGetPropertySize(edsObj->edsObj, propertyID, param, &dataType, &dataSize));
     PyCheck_EDSERROR(retVal);
@@ -389,7 +428,7 @@ static PyObject* PyEds_GetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
     }
 
     EdsDataType dataType;
-    unsigned long dataSize;
+    EdsUInt32 dataSize;
 
     unsigned long retVal(EdsGetPropertySize(edsObj->edsObj, propertyID, param, &dataType, &dataSize));
     PyCheck_EDSERROR(retVal);
@@ -602,7 +641,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
     }
 
     EdsDataType dataType;
-    unsigned long dataSize;
+    EdsUInt32 dataSize;
     unsigned long retVal(EdsGetPropertySize(edsObj->edsObj, propertyID, param, &dataType, &dataSize));
     PyCheck_EDSERROR(retVal);
 
@@ -653,7 +692,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             return nullptr;
         }
         unsigned long uLongVal = PyLong_AsUnsignedLong(pyPropertyData);
-        memcpy_s(propertyData, EDS::DataTypeSize.at(dataType), &uLongVal, sizeof(unsigned long));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &uLongVal, sizeof(unsigned long));
         break;
     }
     case kEdsDataType_UInt64: {
@@ -663,7 +702,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             return nullptr;
         }
         unsigned long long uLongLongVal = PyLong_AsUnsignedLongLong(pyPropertyData);
-        memcpy_s(propertyData, EDS::DataTypeSize.at(dataType), &uLongLongVal, sizeof(unsigned long long));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &uLongLongVal, sizeof(unsigned long long));
         break;
     }
     case kEdsDataType_Int8:
@@ -675,7 +714,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             return nullptr;
         }
         long longVal = PyLong_AsLong(pyPropertyData);
-        memcpy_s(propertyData, EDS::DataTypeSize.at(dataType), &longVal, sizeof(long));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &longVal, sizeof(long));
         break;
     }
     case kEdsDataType_Int64: {
@@ -685,7 +724,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             return nullptr;
         }
         long long longLongVal = PyLong_AsLongLong(pyPropertyData);
-        memcpy_s(propertyData, EDS::DataTypeSize.at(dataType), &longLongVal, sizeof(long long));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &longLongVal, sizeof(long long));
         break;
     }
     case kEdsDataType_Float:
@@ -696,7 +735,7 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             return nullptr;
         }
         double doubleVal = PyFloat_AsDouble(pyPropertyData);
-        memcpy_s(propertyData, EDS::DataTypeSize.at(dataType), &doubleVal, sizeof(double));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &doubleVal, sizeof(double));
         break;
     }
     case kEdsDataType_Rational: {
@@ -1430,6 +1469,24 @@ static PyObject* PyEds_CreateFileStreamEx(PyObject *Py_UNUSED(self), PyObject *a
         return nullptr;
     }
 
+    EdsStreamRef fileStream;
+#if defined(TARGET_OS_LINUX) && !defined(_WIN32)
+    PyObject* pyfilenameEncoded = PyUnicode_EncodeFSDefault(pyFilename);
+    if (!pyfilenameEncoded) {
+        return nullptr;
+    }
+    const char* filenameEncoded = PyBytes_AsString(pyfilenameEncoded);
+    if (filenameEncoded == nullptr) {
+        Py_DECREF(pyfilenameEncoded);
+        return nullptr;
+    }
+    unsigned long retVal(EdsCreateFileStreamEx(
+        filenameEncoded,
+        static_cast<EdsFileCreateDisposition>(createDisposition),
+        static_cast<EdsAccess>(desiredAccess),
+        &fileStream));
+    Py_DECREF(pyfilenameEncoded);
+#else
     Py_ssize_t filenameLen(PyUnicode_GET_LENGTH(pyFilename));
     wchar_t *filenameEncoded(new (std::nothrow) wchar_t[filenameLen + 1]);
     if (filenameEncoded == nullptr) {
@@ -1446,14 +1503,13 @@ static PyObject* PyEds_CreateFileStreamEx(PyObject *Py_UNUSED(self), PyObject *a
         return nullptr;
     }
 
-    EdsStreamRef fileStream;
     unsigned long retVal(EdsCreateFileStreamEx(
         filenameEncoded,
         static_cast<EdsFileCreateDisposition>(createDisposition),
         static_cast<EdsAccess>(desiredAccess),
         &fileStream));
-
     delete[] filenameEncoded;
+#endif
     PyCheck_EDSERROR(retVal);
 
     PyObject *pyFileStream = PyEdsObject_New(fileStream);
@@ -2022,7 +2078,11 @@ static PyObject* PyEds_SetPropertyEventHandler(PyObject *Py_UNUSED(self), PyObje
         PyObject *pyPropertyID = GetEnum("edsdk.constants", "PropID", inPropertyID);
         if (pyPropertyID == nullptr) {
             PyErr_Clear();
-            std::cout << "Unknown Property ID: " << inPropertyID  << std::endl;
+            std::cout << "Unknown Property ID: " << inPropertyID
+                      << " (0x" << std::hex << inPropertyID << std::dec << ")"
+                      << " event=" << inEvent
+                      << " param=" << inParam
+                      << std::endl;
             pyPropertyID = PyLong_FromUnsignedLong(inPropertyID);
         }
         PyObject *pyParam = PyLong_FromUnsignedLong(inParam);
@@ -2288,6 +2348,7 @@ PyMethodDef methodTable[] = {
     // Basic functions
     {"InitializeSDK", (PyCFunction) PyEds_InitializeSDK, METH_NOARGS, PyEds_InitializeSDK__doc__},
     {"TerminateSDK", (PyCFunction) PyEds_TerminateSDK, METH_NOARGS, PyEds_TerminateSDK__doc__},
+    {"CreateFlashSettingRef", (PyCFunction) PyEds_CreateFlashSettingRef, METH_O, PyEds_CreateFlashSettingRef__doc__},
 
     // Item-tree operating functions
     {"GetChildCount", (PyCFunction) PyEds_GetChildCount, METH_VARARGS, PyEds_GetChildCount__doc__},
