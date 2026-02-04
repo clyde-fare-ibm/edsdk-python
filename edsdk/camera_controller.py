@@ -665,6 +665,7 @@ class CameraController:
         if self._flash_ref is None:
             self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
 
+        self.lock_ui()
         try:
             edsdk.SetPropertyData(
                 self._flash_ref,
@@ -672,14 +673,7 @@ class CameraController:
                 0,
                 int(self._flash_target),
             )
-            edsdk.SetPropertyData(
-                self._flash_ref,
-                PropID.Flash_Firing,
-                0,
-                int(self._flash_firing),
-            )
-            time.sleep(1)
-            
+
         except Exception as e:
             info = classify_error(e)
             self._log(f"Error setting flash target: {info}")
@@ -689,6 +683,24 @@ class CameraController:
                     "Flash properties unavailable; ensure external flash is powered "
                     "on and camera is in a creative mode before session start."
                 )
+        try:
+            edsdk.SetPropertyData(
+                self._flash_ref,
+                PropID.Flash_Firing,
+                0,
+                int(self._flash_firing),
+            )
+            time.sleep(1)
+        except Exception as e:
+            info = classify_error(e)
+            self._log(f"Error setting flash firing: {info}")
+            msg = str(info.get("message", "")).upper()
+            if "PROPERTIES_UNAVAILABLE" in msg:
+                self._log(
+                    "Flash properties unavailable; ensure external flash is powered "
+                    "on and camera is in a creative mode before session start."
+                )
+
                 try:
                     edsdk.SetPropertyData(
                         self._cam,
@@ -714,7 +726,7 @@ class CameraController:
                     self._log(
                         f"Retry flash settings failed: {classify_error(retry_exc)}"
                     )
-            
+        self.unlock_ui()            
 
     # ---------- Properties ----------
     def set_properties(
