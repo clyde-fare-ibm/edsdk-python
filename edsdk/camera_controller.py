@@ -499,8 +499,6 @@ class CameraController:
                     edsdk.SetPropertyEventHandler(
                         self._flash_ref, PropertyEvent.All, self._on_flash_property_event
                     )
-                time.sleep(0.1)
-                self.prepare_flash()
             except Exception as e:
                 self._log(f"Flash control unavailable: {e}")
       
