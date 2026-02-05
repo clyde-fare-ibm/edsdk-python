@@ -662,25 +662,32 @@ class CameraController:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
 
-        self.lock_ui()
         try:
-            # Wake flash by simulating a half-press before setting properties.
+            edsdk.SendCommand(
+                self._cam,
+                CameraCommand.PressShutterButton,
+                int(ShutterButton.Halfway),
+            )
+            time.sleep(0.5)
+        except Exception as e:
+            self._log(f"Error pressing shutter button: {e}")
+        finally:
             try:
                 edsdk.SendCommand(
                     self._cam,
                     CameraCommand.PressShutterButton,
-                    int(ShutterButton.Halfway),
+                    int(ShutterButton.OFF),
                 )
-                time.sleep(0.5)
+            except Exception as e:
+                self._log(f"Error sending shutter button off command: {e}")
             finally:
-                try:
-                    edsdk.SendCommand(
-                        self._cam,
-                        CameraCommand.PressShutterButton,
-                        int(ShutterButton.OFF),
-                    )
-                except Exception:
-                    pass
+                time.sleep(0.5)
+
+        self.lock_ui()
+        time.sleep(0.5)
+        try:
+            # Wake flash by simulating a half-press before setting properties.
+
             for attempt in range(3):
                 if self._flash_ref is None or attempt > 0:
                     self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
