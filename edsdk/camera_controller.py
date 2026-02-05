@@ -7,6 +7,7 @@ import asyncio
 import time
 import uuid
 import inspect
+import threading
 from typing import (
     Callable,
     Dict,
@@ -436,6 +437,7 @@ class CameraController:
         register_flash_events: bool = True,
         file_pattern: Optional[str] = None,
         seq_start: int = 1,
+        defer_transfer: bool = False,
     ) -> None:
         self.index = index
         self.save_dir = save_dir
@@ -446,6 +448,8 @@ class CameraController:
         self._log = logger or (print if verbose else (lambda *_args, **_kw: None))
         self._cam: Optional[EdsObject] = None
         self._saved_paths: List[str] = []
+        self._pending_transfers: List[Tuple[EdsObject, Optional[str], str]] = []
+        self._pending_lock = threading.Lock()
         self._obj_cb: Optional[ObjectCallback] = None
         self._prop_cb: Optional[PropertyCallback] = None
         self._flash_prop_cb: Optional[PropertyCallback] = None
@@ -461,6 +465,7 @@ class CameraController:
         self._register_flash_events = register_flash_events
         self._file_pattern = file_pattern
         self._seq = int(seq_start)
+        self._defer_transfer = bool(defer_transfer)
         # One-shot explicit filename (base name); if set, next capture uses this name
         self._next_filename: Optional[str] = None
         self._flash_ref: Optional[EdsObject] = None
@@ -544,56 +549,82 @@ class CameraController:
     def on_flash_property(self, fn: PropertyCallback) -> None:
         self._flash_prop_cb = fn
 
-    def _on_object_event(self, event: ObjectEvent, object_handle: EdsObject) -> int:
-        if event == ObjectEvent.DirItemRequestTransfer:
-            # compute custom filename if pattern is provided
-            dst_name: Optional[str] = None
-            # 1) Highest priority: explicitly specified next filename via capture(filename=...)
+    def _build_dst_name(self, object_handle: EdsObject) -> Tuple[Optional[str], str]:
+        try:
+            info = edsdk.GetDirectoryItemInfo(object_handle)
+            orig_name = info.get("szFileName") or f"{uuid.uuid4()}.bin"
+        except Exception:
+            orig_name = f"{uuid.uuid4()}.bin"
+        dst_name: Optional[str] = None
+        # 1) Highest priority: explicitly specified next filename via capture(filename=...)
+        if self._next_filename:
+            # preserve original extension; ignore any extension in provided name
+            provided = self._next_filename.replace("\\", "_").replace("/", "_")
+            self._next_filename = None
+            base_prov, _ext_prov = os.path.splitext(provided)
+            if not base_prov:
+                base_prov = "image"
+            _base_orig, ext_orig = os.path.splitext(orig_name)
+            if not ext_orig:
+                ext_orig = ".bin"
+            dst_name = f"{base_prov}{ext_orig}"
+        # 2) Next: pattern-based naming if provided
+        elif self._file_pattern:
             try:
-                info = edsdk.GetDirectoryItemInfo(object_handle)
-                orig_name = info.get("szFileName") or f"{uuid.uuid4()}.bin"
+                base, ext = os.path.splitext(orig_name)
+                if not ext:
+                    ext = ".bin"
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                dst_name = self._file_pattern.format(
+                    basename=base,
+                    ext=ext.lstrip("."),
+                    timestamp=ts,
+                    seq=self._seq,
+                )
+                self._seq += 1
             except Exception:
-                info = {}
-                orig_name = f"{uuid.uuid4()}.bin"
-            if self._next_filename:
-                # preserve original extension; ignore any extension in provided name
-                provided = self._next_filename.replace("\\", "_").replace("/", "_")
-                self._next_filename = None
-                base_prov, _ext_prov = os.path.splitext(provided)
-                if not base_prov:
-                    base_prov = "image"
-                _base_orig, ext_orig = os.path.splitext(orig_name)
-                if not ext_orig:
-                    ext_orig = ".bin"
-                dst_name = f"{base_prov}{ext_orig}"
-            # 2) Next: pattern-based naming if provided
-            elif self._file_pattern:
-                try:
-                    base, ext = os.path.splitext(orig_name)
-                    if not ext:
-                        ext = ".bin"
-                    ts = time.strftime("%Y%m%d_%H%M%S")
-                    dst_name = self._file_pattern.format(
-                        basename=base,
-                        ext=ext.lstrip("."),
-                        timestamp=ts,
-                        seq=self._seq,
-                    )
-                    self._seq += 1
-                except Exception:
-                    dst_name = None
+                dst_name = None
+        return dst_name, orig_name
 
-            path = _save_directory_item(
-                object_handle, self.save_dir, dst_basename=dst_name
-            )
-            self._saved_paths.append(path)
-            self._enqueue_async_event(
-                {
-                    "kind": "object",
-                    "event": getattr(ObjectEvent, "DirItemRequestTransfer").name,
-                    "path": path,
-                }
-            )
+    def _queue_pending_transfer(
+        self, object_handle: EdsObject, dst_name: Optional[str], orig_name: str
+    ) -> None:
+        retain_fn = getattr(edsdk, "Retain", None)
+        if callable(retain_fn):
+            try:
+                retain_fn(object_handle)
+            except Exception:
+                pass
+        with self._pending_lock:
+            self._pending_transfers.append((object_handle, dst_name, orig_name))
+
+    def _on_object_event(self, event: ObjectEvent, object_handle: EdsObject) -> int:
+        dir_item_events = {ObjectEvent.DirItemRequestTransfer}
+        if hasattr(ObjectEvent, "DirItemCreated"):
+            dir_item_events.add(ObjectEvent.DirItemCreated)
+        if event in dir_item_events:
+            dst_name, orig_name = self._build_dst_name(object_handle)
+            if self._defer_transfer:
+                self._queue_pending_transfer(object_handle, dst_name, orig_name)
+                self._enqueue_async_event(
+                    {
+                        "kind": "object",
+                        "event": getattr(event, "name", int(event)),
+                        "queued": True,
+                    }
+                )
+            else:
+                path = _save_directory_item(
+                    object_handle, self.save_dir, dst_basename=dst_name
+                )
+                self._saved_paths.append(path)
+                self._enqueue_async_event(
+                    {
+                        "kind": "object",
+                        "event": getattr(ObjectEvent, "DirItemRequestTransfer").name,
+                        "path": path,
+                    }
+                )
         else:
             self._enqueue_async_event(
                 {
@@ -656,6 +687,54 @@ class CameraController:
         except Exception:
             pass
         return 0
+
+    def pending_transfer_count(self) -> int:
+        with self._pending_lock:
+            return len(self._pending_transfers)
+
+    def transfer_pending(
+        self,
+        *,
+        save_dir: Optional[str] = None,
+        max_items: Optional[int] = None,
+    ) -> List[str]:
+        """Download queued SD items to host and return saved paths."""
+        save_dir = save_dir or self.save_dir
+        with self._pending_lock:
+            if max_items is None or max_items <= 0:
+                items = list(self._pending_transfers)
+                self._pending_transfers.clear()
+            else:
+                items = self._pending_transfers[:max_items]
+                self._pending_transfers = self._pending_transfers[max_items:]
+        transferred: List[str] = []
+        failed: List[Tuple[EdsObject, Optional[str], str]] = []
+        for object_handle, dst_name, orig_name in items:
+            try:
+                path = _save_directory_item(
+                    object_handle, save_dir, dst_basename=dst_name or orig_name
+                )
+                transferred.append(path)
+                self._enqueue_async_event(
+                    {
+                        "kind": "object",
+                        "event": "DirItemDeferredTransfer",
+                        "path": path,
+                    }
+                )
+                release_fn = getattr(edsdk, "Release", None)
+                if callable(release_fn):
+                    try:
+                        release_fn(object_handle)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                self._log(f"Deferred transfer failed: {exc}")
+                failed.append((object_handle, dst_name, orig_name))
+        if failed:
+            with self._pending_lock:
+                self._pending_transfers = failed + self._pending_transfers
+        return transferred
 
     def prepare_flash(self) -> None:
         """Configure flash settings via the flash settings object."""
@@ -982,11 +1061,20 @@ class CameraController:
 
     def _wait_for_transfer(self, timeout: float) -> None:
         deadline = time.time() + timeout
-        already = len(self._saved_paths)
+        already = (
+            self.pending_transfer_count()
+            if self._defer_transfer
+            else len(self._saved_paths)
+        )
         while time.time() < deadline:
             time.sleep(0.01)
             _pump_messages_once()
-            if len(self._saved_paths) > already:
+            current = (
+                self.pending_transfer_count()
+                if self._defer_transfer
+                else len(self._saved_paths)
+            )
+            if current > already:
                 return
         raise TimeoutError("Timed out waiting for image transfer event")
 
@@ -1004,6 +1092,8 @@ class CameraController:
         """Capture and return image bytes in memory.
         Optionally keeps or removes the saved files from disk (default: remove).
         """
+        if self._defer_transfer:
+            raise RuntimeError("capture_bytes is not supported with deferred transfer")
         paths = self.capture(
             shots=shots,
             timeout=timeout,
@@ -1058,6 +1148,8 @@ class CameraController:
             TypeError: If raw_processor has invalid signature.
             RuntimeError: If Pillow is not installed or camera session not open.
         """
+        if self._defer_transfer:
+            raise RuntimeError("capture_pil is not supported with deferred transfer")
         try:
             from PIL import Image  # type: ignore
         except Exception as e:
