@@ -62,6 +62,7 @@ from edsdk.constants.properties import (
 ObjectCallback = Callable[["ObjectEvent", "EdsObject"], int]
 PropertyCallback = Callable[["PropertyEvent", "PropID", int], int]
 LiveViewData = Union[bytes, str]
+LiveViewFrame = Union[LiveViewData, Tuple[LiveViewData, Dict[str, object]]]
 
 _CREATIVE_AE_MODES = {
     AEMode.Program,
@@ -1222,7 +1223,9 @@ class CameraController:
         self._live_view_on = False
         self._log("Live view stopped")
 
-    def grab_live_view_frame(self, save_path: Optional[str] = None) -> LiveViewData:
+    def grab_live_view_frame(
+        self, save_path: Optional[str] = None, include_metadata: bool = False
+    ) -> LiveViewFrame:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
         if not self._live_view_on:
@@ -1245,10 +1248,15 @@ class CameraController:
                     )
                     evf_image = edsdk.CreateEvfImageRef(out_stream)
                     edsdk.DownloadEvfImage(self._cam, evf_image)
+                    meta_data: Dict[str, object] = {}
+                    if include_metadata:
+                        meta_data = self._get_live_view_metadata(evf_image)
                     # too many logs when we stream the live view to ffmpeg
                     #self._log(
                     #    f"Live view saved: {save_path} (attempt {attempt}/{MAX_ATTEMPTS})"
                     #)
+                    if include_metadata:
+                        return save_path, meta_data
                     return save_path
                 # Fallback: save to temp file and read bytes
                 tmp_path = os.path.join(self.save_dir, f"evf_{uuid.uuid4().hex}.jpg")
@@ -1257,6 +1265,9 @@ class CameraController:
                 )
                 evf_image = edsdk.CreateEvfImageRef(out_stream)
                 edsdk.DownloadEvfImage(self._cam, evf_image)
+                meta_data = {}
+                if include_metadata:
+                    meta_data = self._get_live_view_metadata(evf_image)
                 with open(tmp_path, "rb") as f:
                     data = f.read()
                 try:
@@ -1266,6 +1277,8 @@ class CameraController:
                 self._log(
                     f"Live view grabbed: {len(data)} bytes (attempt {attempt}/{MAX_ATTEMPTS})"
                 )
+                if include_metadata:
+                    return data, meta_data
                 return data
             except Exception as e:  # Catch SDK error
                 code = getattr(e, "code", None)
@@ -1360,6 +1373,38 @@ class CameraController:
             return int(edsdk.GetPropertyData(self._cam, pid, 0))  # type: ignore[arg-type]
         except Exception:
             return -1
+
+    def _get_live_view_metadata(self, evf_image: EdsObject) -> Dict[str, object]:
+        """Extract extra EVF metadata from the EVF image ref."""
+        meta: Dict[str, object] = {}
+        evf_props = [
+            ("evf_zoom", PropID.Evf_Zoom),
+            ("evf_zoom_position", PropID.Evf_ZoomPosition),
+            ("evf_zoom_rect", PropID.Evf_ZoomRect),
+            ("evf_image_position", PropID.Evf_ImagePosition),
+            ("evf_image_clip_rect", PropID.Evf_ImageClipRect),
+            ("evf_coordinate_system", PropID.Evf_CoordinateSystem),
+            ("evf_histogram_status", PropID.Evf_HistogramStatus),
+            ("evf_histogram_y", PropID.Evf_HistogramY),
+            ("evf_histogram_r", PropID.Evf_HistogramR),
+            ("evf_histogram_g", PropID.Evf_HistogramG),
+            ("evf_histogram_b", PropID.Evf_HistogramB),
+            ("evf_visible_rect", PropID.Evf_VisibleRect),
+        ]
+        for key, pid in evf_props:
+            try:
+                meta[key] = edsdk.GetPropertyData(evf_image, pid, 0)  # type: ignore[arg-type]
+            except Exception:
+                self._log(f"Error getting live view metadata: {key}")
+        # Some models expose focus info on the camera rather than the EVF image.
+        if self._cam is not None:
+            try:
+                meta["focus_info"] = edsdk.GetPropertyData(
+                    self._cam, PropID.FocusInfo, 0
+                )
+            except Exception:
+                self._log(f"Error getting focus info from camera")
+        return meta
 
 
 def _iso_code_to_string(code: int) -> str:
