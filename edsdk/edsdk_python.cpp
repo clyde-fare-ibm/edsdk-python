@@ -1,6 +1,7 @@
 #include "edsdk_python.h"
 #include "datetime.h"
 
+#include <algorithm>
 #include <cstring>
 
 #if defined(TARGET_OS_LINUX) && !defined(_WIN32)
@@ -11,8 +12,7 @@ typedef unsigned long long __int64u;
 typedef wchar_t WCHAR;
 #endif
 static inline void edsdk_memcpy(void* dst, size_t dst_size, const void* src, size_t src_size) {
-    (void)dst_size;
-    std::memcpy(dst, src, src_size);
+    std::memcpy(dst, src, std::min(dst_size, src_size));
 }
 #else
 static inline void edsdk_memcpy(void* dst, size_t dst_size, const void* src, size_t src_size) {
@@ -450,33 +450,79 @@ static PyObject* PyEds_GetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             pyPropertyData = PyUnicode_DecodeFSDefault(static_cast<char *>(propertyData));
             break;
         }
-        case kEdsDataType_UInt8:
-        case kEdsDataType_UInt16:
-        case kEdsDataType_UInt32: {
+        case kEdsDataType_UInt8: {
+            EdsUInt8 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsUInt8));
             if (propertyID == kEdsPropID_BatteryQuality) {
-                pyPropertyData = GetEnum("edsdk.constants", "BatteryQuality", *static_cast<int *>(propertyData));
+                pyPropertyData = GetEnum("edsdk.constants", "BatteryQuality", static_cast<int>(value));
                 if (pyPropertyData == nullptr) {
                     PyErr_Clear();
-                    std::cout << "Unknown Battery Quality: " << *static_cast<int *>(propertyData) << std::endl;
-                    pyPropertyData = PyLong_FromUnsignedLong(*static_cast<unsigned long *>(propertyData));
+                    std::cout << "Unknown Battery Quality: " << static_cast<int>(value) << std::endl;
+                    pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
                 }
                 break;
             }
-            pyPropertyData = PyLong_FromUnsignedLong(*static_cast<unsigned long*>(propertyData));
+            pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
+            break;
+        }
+        case kEdsDataType_UInt16: {
+            EdsUInt16 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsUInt16));
+            if (propertyID == kEdsPropID_BatteryQuality) {
+                pyPropertyData = GetEnum("edsdk.constants", "BatteryQuality", static_cast<int>(value));
+                if (pyPropertyData == nullptr) {
+                    PyErr_Clear();
+                    std::cout << "Unknown Battery Quality: " << static_cast<int>(value) << std::endl;
+                    pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
+                }
+                break;
+            }
+            pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
+            break;
+        }
+        case kEdsDataType_UInt32: {
+            EdsUInt32 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsUInt32));
+            if (propertyID == kEdsPropID_BatteryQuality) {
+                pyPropertyData = GetEnum("edsdk.constants", "BatteryQuality", static_cast<int>(value));
+                if (pyPropertyData == nullptr) {
+                    PyErr_Clear();
+                    std::cout << "Unknown Battery Quality: " << static_cast<int>(value) << std::endl;
+                    pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
+                }
+                break;
+            }
+            pyPropertyData = PyLong_FromUnsignedLong(static_cast<unsigned long>(value));
             break;
         }
         case kEdsDataType_UInt64: {
-            pyPropertyData = PyLong_FromUnsignedLongLong(*static_cast<unsigned long long *>(propertyData));
+            EdsUInt64 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsUInt64));
+            pyPropertyData = PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(value));
             break;
         }
-        case kEdsDataType_Int8:
-        case kEdsDataType_Int16:
+        case kEdsDataType_Int8: {
+            EdsInt8 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsInt8));
+            pyPropertyData = PyLong_FromLong(static_cast<long>(value));
+            break;
+        }
+        case kEdsDataType_Int16: {
+            EdsInt16 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsInt16));
+            pyPropertyData = PyLong_FromLong(static_cast<long>(value));
+            break;
+        }
         case kEdsDataType_Int32: {
-            pyPropertyData = PyLong_FromLong(*static_cast<long*>(propertyData));
+            EdsInt32 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsInt32));
+            pyPropertyData = PyLong_FromLong(static_cast<long>(value));
             break;
         }
         case kEdsDataType_Int64: {
-            pyPropertyData = PyLong_FromLongLong(*static_cast<long long*>(propertyData));
+            EdsInt64 value = 0;
+            std::memcpy(&value, propertyData, sizeof(EdsInt64));
+            pyPropertyData = PyLong_FromLongLong(static_cast<long long>(value));
             break;
         }
         case kEdsDataType_Float:
@@ -683,16 +729,34 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             Py_DECREF(pyString);
             break;
         }
-    case kEdsDataType_UInt8:
-    case kEdsDataType_UInt16:
+    case kEdsDataType_UInt8: {
+        if (!PyLong_Check(pyPropertyData)) {
+            PyErr_Format(PyExc_TypeError, "Property %lu expects unsigned int", propertyID);
+            delete propertyData;
+            return nullptr;
+        }
+        EdsUInt8 value = static_cast<EdsUInt8>(PyLong_AsUnsignedLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsUInt8));
+        break;
+    }
+    case kEdsDataType_UInt16: {
+        if (!PyLong_Check(pyPropertyData)) {
+            PyErr_Format(PyExc_TypeError, "Property %lu expects unsigned int", propertyID);
+            delete propertyData;
+            return nullptr;
+        }
+        EdsUInt16 value = static_cast<EdsUInt16>(PyLong_AsUnsignedLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsUInt16));
+        break;
+    }
     case kEdsDataType_UInt32: {
         if (!PyLong_Check(pyPropertyData)) {
             PyErr_Format(PyExc_TypeError, "Property %lu expects unsigned int", propertyID);
             delete propertyData;
             return nullptr;
         }
-        unsigned long uLongVal = PyLong_AsUnsignedLong(pyPropertyData);
-        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &uLongVal, sizeof(unsigned long));
+        EdsUInt32 value = static_cast<EdsUInt32>(PyLong_AsUnsignedLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsUInt32));
         break;
     }
     case kEdsDataType_UInt64: {
@@ -701,20 +765,38 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             delete propertyData;
             return nullptr;
         }
-        unsigned long long uLongLongVal = PyLong_AsUnsignedLongLong(pyPropertyData);
-        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &uLongLongVal, sizeof(unsigned long long));
+        EdsUInt64 value = static_cast<EdsUInt64>(PyLong_AsUnsignedLongLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsUInt64));
         break;
     }
-    case kEdsDataType_Int8:
-    case kEdsDataType_Int16:
+    case kEdsDataType_Int8: {
+        if (!PyLong_Check(pyPropertyData)) {
+            PyErr_Format(PyExc_TypeError, "Property %lu expects int", propertyID);
+            delete propertyData;
+            return nullptr;
+        }
+        EdsInt8 value = static_cast<EdsInt8>(PyLong_AsLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsInt8));
+        break;
+    }
+    case kEdsDataType_Int16: {
+        if (!PyLong_Check(pyPropertyData)) {
+            PyErr_Format(PyExc_TypeError, "Property %lu expects int", propertyID);
+            delete propertyData;
+            return nullptr;
+        }
+        EdsInt16 value = static_cast<EdsInt16>(PyLong_AsLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsInt16));
+        break;
+    }
     case kEdsDataType_Int32: {
         if (!PyLong_Check(pyPropertyData)) {
             PyErr_Format(PyExc_TypeError, "Property %lu expects int", propertyID);
             delete propertyData;
             return nullptr;
         }
-        long longVal = PyLong_AsLong(pyPropertyData);
-        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &longVal, sizeof(long));
+        EdsInt32 value = static_cast<EdsInt32>(PyLong_AsLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsInt32));
         break;
     }
     case kEdsDataType_Int64: {
@@ -723,8 +805,8 @@ static PyObject* PyEds_SetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
             delete propertyData;
             return nullptr;
         }
-        long long longLongVal = PyLong_AsLongLong(pyPropertyData);
-        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &longLongVal, sizeof(long long));
+        EdsInt64 value = static_cast<EdsInt64>(PyLong_AsLongLong(pyPropertyData));
+        edsdk_memcpy(propertyData, EDS::DataTypeSize.at(dataType), &value, sizeof(EdsInt64));
         break;
     }
     case kEdsDataType_Float:
