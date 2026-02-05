@@ -37,6 +37,7 @@ from edsdk import (
     PropID,
     PropertyEvent,
 )
+from edsdk.constants.commands import ShutterButton
 from edsdk.constants.generic import CameraStatusCommand
 from edsdk.constants.properties import (
     Av as AvTable,
@@ -661,72 +662,42 @@ class CameraController:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
 
-
-        if self._flash_ref is None:
-            self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
-
         self.lock_ui()
         try:
-            edsdk.SetPropertyData(
-                self._flash_ref,
-                PropID.Flash_Target,
-                0,
-                int(self._flash_target),
-            )
-
-        except Exception as e:
-            info = classify_error(e)
-            self._log(f"Error setting flash target: {info}")
-            msg = str(info.get("message", "")).upper()
-            if "PROPERTIES_UNAVAILABLE" in msg:
-                self._log(
-                    "Flash properties unavailable; ensure external flash is powered "
-                    "on and camera is in a creative mode before session start."
+            # Wake flash by simulating a half-press before setting properties.
+            try:
+                edsdk.SendCommand(
+                    self._cam,
+                    CameraCommand.PressShutterButton,
+                    int(ShutterButton.Halfway),
                 )
-        try:
-            edsdk.SetPropertyData(
-                self._flash_ref,
-                PropID.Flash_Firing,
-                0,
-                int(self._flash_firing),
-            )
-            time.sleep(1)
-        except Exception as e:
-            info = classify_error(e)
-            self._log(f"Error setting flash firing: {info}")
-            msg = str(info.get("message", "")).upper()
-            if "PROPERTIES_UNAVAILABLE" in msg:
-                self._log(
-                    "Flash properties unavailable; ensure external flash is powered "
-                    "on and camera is in a creative mode before session start."
-                )
+                time.sleep(0.5)
+            finally:
+                try:
+                    edsdk.SendCommand(
+                        self._cam,
+                        CameraCommand.PressShutterButton,
+                        int(ShutterButton.OFF),
+                    )
+                except Exception:
+                    pass
+            for attempt in range(3):
+                if self._flash_ref is None or attempt > 0:
+                    self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
 
                 try:
-                    edsdk.SetPropertyData(
-                        self._cam,
-                        PropID.Flash_Target,
-                        0,
-                        int(self._flash_target),
-                    )
-                    time.sleep(0.5)
-                    self._flash_ref = edsdk.CreateFlashSettingRef(self._cam)
-                    edsdk.SetPropertyData(
-                        self._flash_ref,
-                        PropID.Flash_Target,
-                        0,
-                        int(self._flash_target),
-                    )
-                    edsdk.SetPropertyData(
-                        self._flash_ref,
-                        PropID.Flash_Firing,
-                        0,
-                        int(self._flash_firing),
-                    )
-                except Exception as retry_exc:
-                    self._log(
-                        f"Retry flash settings failed: {classify_error(retry_exc)}"
-                    )
-        self.unlock_ui()            
+                    edsdk.SetPropertyData(self._flash_ref, PropID.Flash_Target, 0, int(self._flash_target))
+                    edsdk.SetPropertyData(self._flash_ref, PropID.Flash_Firing, 0, int(self._flash_firing))
+                    break
+                except Exception as e:
+                    info = classify_error(e)
+                    if info.get("code") == 80:  # PROPERTIES_UNAVAILABLE
+                        time.sleep(0.3)
+                        continue
+                    raise
+        finally:
+            self.unlock_ui()
+
 
     # ---------- Properties ----------
     def set_properties(
