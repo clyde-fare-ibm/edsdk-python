@@ -665,7 +665,7 @@ class CameraController:
             edsdk.SendCommand(
                 self._cam,
                 CameraCommand.PressShutterButton,
-                int(ShutterButton.Halfway_NonAF),
+                int(ShutterButton.Halfway),
             )
             time.sleep(0.5)
         except Exception as e:
@@ -675,7 +675,7 @@ class CameraController:
                 edsdk.SendCommand(
                     self._cam,
                     CameraCommand.PressShutterButton,
-                    int(ShutterButton.OFF_NonAF),
+                    int(ShutterButton.OFF),
                 )
             except Exception as e:
                 self._log(f"Error sending shutter button off command: {e}")
