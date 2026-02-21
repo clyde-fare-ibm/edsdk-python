@@ -658,16 +658,14 @@ class CameraController:
             pass
         return 0
 
-    def prepare_flash(self) -> None:
-        """Configure flash settings via the flash settings object."""
+    def wake_up(self) -> None:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
-
         try:
             edsdk.SendCommand(
                 self._cam,
                 CameraCommand.PressShutterButton,
-                int(ShutterButton.Halfway),
+                int(ShutterButton.Halfway_NonAF),
             )
             time.sleep(0.5)
         except Exception as e:
@@ -677,13 +675,19 @@ class CameraController:
                 edsdk.SendCommand(
                     self._cam,
                     CameraCommand.PressShutterButton,
-                    int(ShutterButton.OFF),
+                    int(ShutterButton.OFF_NonAF),
                 )
             except Exception as e:
                 self._log(f"Error sending shutter button off command: {e}")
             finally:
                 time.sleep(0.5)
 
+    def prepare_flash(self) -> None:
+        """Configure flash settings via the flash settings object."""
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+
+        self.wake_up()
         self.lock_ui()
         time.sleep(0.5)
         try:
@@ -1403,7 +1407,7 @@ class CameraController:
                     self._cam, PropID.FocusInfo, 0
                 )
             except Exception:
-                self._log(f"Error getting focus info from camera")
+                self._log("Error getting focus info from camera")
         return meta
 
 
