@@ -6,29 +6,17 @@ import io
 import asyncio
 import time
 import uuid
-import inspect
 import queue
 import threading
-from collections import deque
 from typing import (
     Callable,
-    Deque,
     Dict,
     List,
     Optional,
-    Protocol,
     Tuple,
     Union,
     TYPE_CHECKING,
-    Type,
-    runtime_checkable,
 )
-
-# Only imported for type checking to avoid runtime cost if deps not installed
-if TYPE_CHECKING:  # pragma: no cover
-    from PIL import Image
-    import numpy as np
-
 
 # External SDK imports
 import edsdk
@@ -46,7 +34,6 @@ from edsdk.constants.generic import CameraStatusCommand
 from edsdk.constants.properties import (
     Av as AvTable,
     Tv as TvTable,
-    ISOSpeedCamera,
     SaveTo,
     AEMode,
     MeteringMode,
@@ -54,12 +41,24 @@ from edsdk.constants.properties import (
     ImageQuality,
     DriveMode,
     EvfOutputDevice,
-    PropID as _PropIDEnum,
     AFMode,
     EvfAFMode,
     FlashFiring,
     FlashTarget,
 )
+from ._property_codec import (
+    enum_code,
+    enum_supported_names,
+    iso_code_to_string,
+    parse_av,
+    parse_iso,
+    parse_tv,
+)
+from ._transfer_pipeline import TransferPipeline
+
+if TYPE_CHECKING:  # pragma: no cover
+    from PIL import Image
+    import numpy as np
 
 
 # Public callback / return type aliases (after imports to satisfy linters)
@@ -67,142 +66,6 @@ ObjectCallback = Callable[["ObjectEvent", "EdsObject"], int]
 PropertyCallback = Callable[["PropertyEvent", "PropID", int], int]
 LiveViewData = Union[bytes, str]
 LiveViewFrame = Union[LiveViewData, Tuple[LiveViewData, Dict[str, object]]]
-
-_CREATIVE_AE_MODES = {
-    AEMode.Program,
-    AEMode.Tv,
-    AEMode.Av,
-    AEMode.Manual,
-    AEMode.Bulb,
-    AEMode.A_DEP,
-    AEMode.DEP,
-    AEMode.Custom,
-}
-
-
-@runtime_checkable
-class RawProcessor(Protocol):
-    """Protocol for RAW image development callbacks.
-
-    Implement a function or callable object with this signature to process
-    RAW image data from the camera.
-
-    Args:
-        raw_bytes: Binary data of the RAW file (e.g., CR2, CR3).
-
-    Returns:
-        Developed image as PIL.Image.Image (RGB mode recommended).
-
-    Example using rawpy:
-        ```python
-        import io
-        import rawpy
-        from PIL import Image
-
-        def develop_raw(raw_bytes: bytes) -> Image.Image:
-            with rawpy.imread(io.BytesIO(raw_bytes)) as raw:
-                rgb = raw.postprocess(
-                    use_camera_wb=True,
-                    output_bps=8,
-                )
-            return Image.fromarray(rgb)
-
-        # Usage
-        with CameraController() as cam:
-            images = cam.capture_pil(raw_processor=develop_raw)
-        ```
-
-    Example with custom settings:
-        ```python
-        class MyRawProcessor:
-            def __init__(self, gamma: float = 2.2):
-                self.gamma = gamma
-
-            def __call__(self, raw_bytes: bytes) -> Image.Image:
-                import io
-                import rawpy
-                import numpy as np
-                from PIL import Image
-
-                with rawpy.imread(io.BytesIO(raw_bytes)) as raw:
-                    rgb = raw.postprocess(gamma=(1, 1), output_bps=16)
-
-                # Apply custom gamma
-                rgb_float = rgb.astype(np.float32) / 65535.0
-                rgb_gamma = np.power(rgb_float, 1.0 / self.gamma)
-                rgb_8bit = (rgb_gamma * 255).clip(0, 255).astype(np.uint8)
-
-                return Image.fromarray(rgb_8bit)
-
-        # Usage
-        processor = MyRawProcessor(gamma=2.4)
-        images = cam.capture_pil(raw_processor=processor)
-        ```
-    """
-
-    def __call__(self, raw_bytes: bytes) -> "Image.Image":
-        """Process RAW bytes and return developed PIL Image."""
-        ...
-
-
-def _validate_raw_processor(processor: object) -> None:
-    """Validate that processor conforms to RawProcessor protocol.
-
-    Args:
-        processor: Object to validate.
-
-    Raises:
-        TypeError: If processor is not callable or has wrong signature.
-    """
-    if not callable(processor):
-        raise TypeError(
-            "raw_processor must be callable.\n"
-            "Expected signature: (raw_bytes: bytes) -> PIL.Image.Image\n"
-            "See RawProcessor docstring for implementation examples."
-        )
-
-    # Check signature if possible
-    try:
-        sig = inspect.signature(processor)
-        params = [
-            p
-            for p in sig.parameters.values()
-            if p.default is inspect.Parameter.empty
-            and p.kind
-            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-        ]
-        # Should have exactly 1 required positional parameter
-        if len(params) != 1:
-            raise TypeError(
-                f"raw_processor must accept exactly 1 required argument (raw_bytes), "
-                f"but got {len(params)} required argument(s).\n"
-                "Expected signature: (raw_bytes: bytes) -> PIL.Image.Image"
-            )
-    except (ValueError, TypeError):
-        # Some built-in callables don't support signature inspection
-        pass
-
-
-# RAW type codes in upper 16 bits of ImageQuality
-# 0x0064: RAW (CR2/CR3), 0x0164: MRAW (SRAW1), 0x0264: SRAW (SRAW2), 0x0063: CRAW
-_RAW_QUALITY_PREFIXES = frozenset({0x0064, 0x0164, 0x0264, 0x0063})
-
-# File extensions for RAW images (fallback check)
-RAW_EXTENSIONS = frozenset(
-    {
-        ".cr2",
-        ".cr3",  # Canon
-        ".nef",  # Nikon
-        ".arw",  # Sony
-        ".dng",  # Adobe DNG
-        ".orf",  # Olympus
-        ".rw2",  # Panasonic
-        ".pef",  # Pentax
-        ".srw",  # Samsung
-        ".raf",  # Fujifilm
-    }
-)
-
 
 # Windows message pumping for EDSDK callbacks
 if os.name == "nt":
@@ -245,175 +108,6 @@ def _save_directory_item(
     return dst
 
 
-def _reverse_lookup(table: Dict[int, str]) -> Dict[str, int]:
-    # Normalize keys to a canonical string for robust matching
-    rev: Dict[str, int] = {}
-    for k, v in table.items():
-        key = str(v).strip().lower()
-        rev[key] = k
-        # For Av allow prefix like f/5.6
-        if (
-            key.replace(" ", "").replace("(1/3)", "")
-            and "/" not in key
-            and "bulb" not in key
-        ):
-            try:
-                fnum = float(key)
-                rev[f"f/{fnum:g}"] = k
-                rev[f"{fnum:g}"] = k
-            except Exception:
-                pass
-        # For Tv allow variants like 0.5s, 1/125s, integers without quotes
-        if any(ch in key for ch in ['"', "/"]) or key.isdigit():
-            cleaned = key.replace('"', "s").replace(" ", "")
-            rev[cleaned] = k
-    return rev
-
-
-_AV_STR_TO_CODE = _reverse_lookup(AvTable)
-_TV_STR_TO_CODE = _reverse_lookup(TvTable)
-
-
-def _parse_av(value: Union[str, float, int]) -> int:
-    if isinstance(value, (int, float)):
-        key = f"{float(value):g}"
-        if key in _AV_STR_TO_CODE:
-            return _AV_STR_TO_CODE[key]
-        key2 = f"f/{float(value):g}"
-        if key2 in _AV_STR_TO_CODE:
-            return _AV_STR_TO_CODE[key2]
-        raise ValueError(f"Unsupported Av value: {value}")
-    key = str(value).strip().lower()
-    key = key.replace("f ", "f/") if key.startswith("f ") else key
-    if key.startswith("f/") and key[2:] in _AV_STR_TO_CODE:
-        return _AV_STR_TO_CODE[key]
-    if key in _AV_STR_TO_CODE:
-        return _AV_STR_TO_CODE[key]
-    # Try removing trailing 'f' or spaces
-    key_alt = key.rstrip("f ")
-    if key_alt in _AV_STR_TO_CODE:
-        return _AV_STR_TO_CODE[key_alt]
-    raise ValueError(f"Unsupported Av value: {value}")
-
-
-def _parse_tv(value: Union[str, float, int]) -> int:
-    # Accept formats: "1/125", 0.5, "0.5", 2 (seconds), "bulb"
-    if isinstance(value, (int, float)):
-        seconds = float(value)
-        # Build candidate keys
-        candidates = [
-            f"{seconds:g}s",
-            f"{int(seconds)}",
-            f"{int(seconds)}s",
-        ]
-        for c in candidates:
-            c = c.lower()
-            if c in _TV_STR_TO_CODE:
-                return _TV_STR_TO_CODE[c]
-        # Try to find nearest by computing numeric seconds of table
-        best: Optional[Tuple[int, float]] = None
-        for code, disp in TvTable.items():
-            try:
-                s = _tv_display_to_seconds(disp)
-            except Exception:
-                continue
-            err = abs(s - seconds)
-            if best is None or err < best[1]:
-                best = (code, err)
-        if best is not None and best[1] < 1e-6:  # exact or very close
-            return best[0]
-        raise ValueError(f"Unsupported Tv value: {value}")
-    key = str(value).strip().lower()
-    if key == "bulb":
-        return _TV_STR_TO_CODE.get("bulb", 0x0C)
-    # Normalize variants like 1/125s, 0.5s, 2s, 2
-    key = key.replace('"', "s")
-    if key.endswith("sec"):
-        key = key[:-3] + "s"
-    if key in _TV_STR_TO_CODE:
-        return _TV_STR_TO_CODE[key]
-    # Remove trailing 's'
-    if key.endswith("s") and key[:-1] in _TV_STR_TO_CODE:
-        return _TV_STR_TO_CODE[key[:-1]]
-    raise ValueError(f"Unsupported Tv value: {value}")
-
-
-def _tv_display_to_seconds(display: str) -> float:
-    import re
-
-    disp = str(display).strip()
-    if disp.lower() == "bulb":
-        raise ValueError("Bulb has no fixed seconds")
-    # Canon style: 0"5 -> 0.5s, 3"2 -> 3.2s, 30" -> 30s
-    if '"' in disp:
-        m = re.fullmatch(r"(\d+)\"(\d)", disp)
-        if m:
-            return float(f"{m.group(1)}.{m.group(2)}")
-        # pure seconds like 30"
-        if disp.endswith('"') and disp[:-1].isdigit():
-            return float(disp[:-1])
-    # Normalize a few patterns
-    d = disp.replace('"', "s")
-    if d.endswith("s"):
-        # 0.5s, 3s, 10s
-        return float(d[:-1])
-    if "/" in d:
-        num, den = d.split("/", 1)
-        return float(num) / float(den)
-    # plain number means seconds
-    return float(d)
-
-
-def _parse_iso(value: Union[str, int]) -> int:
-    if isinstance(value, int):
-        if value == 0:
-            return int(ISOSpeedCamera.ISOAuto)
-        name = f"ISO{value}"
-        if hasattr(ISOSpeedCamera, name):
-            return int(getattr(ISOSpeedCamera, name))
-        raise ValueError(f"Unsupported ISO value: {value}")
-    key = str(value).strip().lower()
-    if key in ("auto", "isoauto"):
-        return int(ISOSpeedCamera.ISOAuto)
-    if key.startswith("iso"):
-        tail = key[3:]
-        if tail.isdigit():
-            return _parse_iso(int(tail))
-    if key.isdigit():
-        return _parse_iso(int(key))
-    raise ValueError(f"Unsupported ISO value: {value}")
-
-
-def _image_quality_includes_raw(quality_code: int) -> bool:
-    """Check if the ImageQuality setting includes RAW capture.
-
-    Args:
-        quality_code: The ImageQuality property value from camera.
-
-    Returns:
-        True if RAW (including CRAW/MRAW/SRAW) is part of the capture.
-    """
-    upper = (quality_code >> 16) & 0xFFFF
-    return upper in _RAW_QUALITY_PREFIXES
-
-
-def _image_quality_is_raw_only(quality_code: int) -> bool:
-    """Check if the ImageQuality setting is RAW-only (no JPEG/HEIF).
-
-    RAW-only values have 0xFF0F in lower 16 bits.
-    """
-    if not _image_quality_includes_raw(quality_code):
-        return False
-    lower = quality_code & 0xFFFF
-    return lower == 0xFF0F
-
-
-def _is_raw_file(path: str) -> bool:
-    """Check if the file is a RAW image based on extension."""
-    _, ext = os.path.splitext(path)
-    return ext.lower() in RAW_EXTENSIONS
-
-
 class CameraController:
     """
     A small, ergonomic wrapper around edsdk for property management and capture.
@@ -452,7 +146,6 @@ class CameraController:
         self.ui_locked = False
         self._log = logger or (print if verbose else (lambda *_args, **_kw: None))
         self._cam: Optional[EdsObject] = None
-        self._saved_paths: List[str] = []
         self._obj_cb: Optional[ObjectCallback] = None
         self._prop_cb: Optional[PropertyCallback] = None
         self._flash_prop_cb: Optional[PropertyCallback] = None
@@ -482,12 +175,10 @@ class CameraController:
         # Non-Windows uses polling GetEvent; keep pumping in background for async capture.
         self._pump_stop = threading.Event()
         self._pump_thread: Optional[threading.Thread] = None
-        self._saved_lock = threading.Lock()
-        self._downloaded_paths: Deque[str] = deque()
-        self._download_errors: List[str] = []
-        self._completed_transfers = 0
-        self._finished_transfers = 0
-        self._queued_transfers = 0
+        self._transfers = TransferPipeline(
+            max_inflight=self._max_inflight,
+            inflight_wait_timeout=self._inflight_wait_timeout,
+        )
 
     # ---------- Lifecycle ----------
     def __enter__(self) -> "CameraController":
@@ -615,11 +306,7 @@ class CameraController:
                 path = _save_directory_item(
                     object_handle, self.save_dir, dst_basename=dst_name
                 )
-                with self._saved_lock:
-                    self._saved_paths.append(path)
-                    self._downloaded_paths.append(path)
-                    self._completed_transfers += 1
-                    self._finished_transfers += 1
+                self._transfers.mark_downloaded(path)
                 self._enqueue_async_event(
                     {
                         "kind": "object",
@@ -628,9 +315,7 @@ class CameraController:
                     }
                 )
             except Exception as exc:
-                with self._saved_lock:
-                    self._download_errors.append(str(exc))
-                    self._finished_transfers += 1
+                self._transfers.mark_download_error(exc)
                 self._enqueue_async_event(
                     {
                         "kind": "object",
@@ -644,27 +329,11 @@ class CameraController:
     def _queue_transfer(
         self, object_handle: EdsObject, dst_name: Optional[str]
     ) -> None:
-        with self._saved_lock:
-            self._queued_transfers += 1
+        self._transfers.mark_queued()
         self._download_q.put((object_handle, dst_name))
 
     def _wait_for_inflight_slot(self, timeout: Optional[float] = None) -> None:
-        if self._max_inflight is None:
-            return
-        if timeout is None:
-            timeout = self._inflight_wait_timeout
-        deadline = None if timeout is None else (time.time() + timeout)
-        while True:
-            with self._saved_lock:
-                inflight = self._queued_transfers - self._finished_transfers
-                if inflight < self._max_inflight:
-                    return
-            if deadline is not None and time.time() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for inflight slot (max_inflight={self._max_inflight})"
-                )
-            _pump_messages_once()
-            time.sleep(0.005)
+        self._transfers.wait_for_inflight_slot(_pump_messages_once, timeout=timeout)
 
     def _on_object_event(self, event: ObjectEvent, object_handle: EdsObject) -> int:
         if event == ObjectEvent.DirItemRequestTransfer:
@@ -851,32 +520,32 @@ class CameraController:
         # Prepare desired values
         to_set: List[Tuple[PropID, int]] = []
         if av is not None:
-            to_set.append((PropID.Av, _parse_av(av)))
+            to_set.append((PropID.Av, parse_av(av)))
         if tv is not None:
-            to_set.append((PropID.Tv, _parse_tv(tv)))
+            to_set.append((PropID.Tv, parse_tv(tv)))
         if iso is not None:
-            to_set.append((PropID.ISOSpeed, _parse_iso(iso)))
+            to_set.append((PropID.ISOSpeed, parse_iso(iso)))
         if ae_mode is not None:
-            to_set.append((PropID.AEMode, _enum_code(AEMode, ae_mode)))
+            to_set.append((PropID.AEMode, enum_code(AEMode, ae_mode)))
         if metering is not None:
-            to_set.append((PropID.MeteringMode, _enum_code(MeteringMode, metering)))
+            to_set.append((PropID.MeteringMode, enum_code(MeteringMode, metering)))
         if white_balance is not None:
             to_set.append(
-                (PropID.WhiteBalance, _enum_code(WhiteBalance, white_balance))
+                (PropID.WhiteBalance, enum_code(WhiteBalance, white_balance))
             )
         if image_quality is not None:
             to_set.append(
-                (PropID.ImageQuality, _enum_code(ImageQuality, image_quality))
+                (PropID.ImageQuality, enum_code(ImageQuality, image_quality))
             )
         if drive_mode is not None:
-            to_set.append((PropID.DriveMode, _enum_code(DriveMode, drive_mode)))
+            to_set.append((PropID.DriveMode, enum_code(DriveMode, drive_mode)))
         # Manual focus convenience flag takes precedence over af_mode
         if manual_focus is True:
             to_set.append((PropID.AFMode, int(AFMode.ManualFocus)))
         elif af_mode is not None:
-            to_set.append((PropID.AFMode, _enum_code(AFMode, af_mode)))
+            to_set.append((PropID.AFMode, enum_code(AFMode, af_mode)))
         if evf_af_mode is not None:
-            to_set.append((PropID.Evf_AFMode, _enum_code(EvfAFMode, evf_af_mode)))
+            to_set.append((PropID.Evf_AFMode, enum_code(EvfAFMode, evf_af_mode)))
 
         # Validate against camera descriptors; optionally tolerate AF/AEMode unsupported
         if validate:
@@ -923,7 +592,7 @@ class CameraController:
         props: Dict[str, Union[str, int]] = {
             "Av": AvTable.get(av_code, str(av_code)),
             "Tv": TvTable.get(tv_code, str(tv_code)),
-            "ISO": _iso_code_to_string(int(iso_code)),
+            "ISO": iso_code_to_string(int(iso_code)),
             "SaveTo": str(edsdk.GetPropertyData(self._cam, PropID.SaveTo, 0)),
             "AEMode": enum_name(
                 AEMode, edsdk.GetPropertyData(self._cam, PropID.AEMode, 0)
@@ -996,35 +665,31 @@ class CameraController:
                 TvTable.get(c, str(c)) for c in self._get_supported_codes(PropID.Tv)
             ],
             "ISO": [
-                _iso_code_to_string(int(c))
+                iso_code_to_string(int(c))
                 for c in self._get_supported_codes(PropID.ISOSpeed)
             ],
-            "AEMode": _enum_supported_names(
-                PropID.AEMode, AEMode, self._get_supported_codes(PropID.AEMode)
+            "AEMode": enum_supported_names(
+                AEMode, self._get_supported_codes(PropID.AEMode)
             ),
-            "MeteringMode": _enum_supported_names(
-                PropID.MeteringMode,
+            "MeteringMode": enum_supported_names(
                 MeteringMode,
                 self._get_supported_codes(PropID.MeteringMode),
             ),
-            "WhiteBalance": _enum_supported_names(
-                PropID.WhiteBalance,
+            "WhiteBalance": enum_supported_names(
                 WhiteBalance,
                 self._get_supported_codes(PropID.WhiteBalance),
             ),
-            "ImageQuality": _enum_supported_names(
-                PropID.ImageQuality,
+            "ImageQuality": enum_supported_names(
                 ImageQuality,
                 self._get_supported_codes(PropID.ImageQuality),
             ),
-            "DriveMode": _enum_supported_names(
-                PropID.DriveMode, DriveMode, self._get_supported_codes(PropID.DriveMode)
+            "DriveMode": enum_supported_names(
+                DriveMode, self._get_supported_codes(PropID.DriveMode)
             ),
-            "AFMode": _enum_supported_names(
-                PropID.AFMode, AFMode, self._get_supported_codes(PropID.AFMode)
+            "AFMode": enum_supported_names(
+                AFMode, self._get_supported_codes(PropID.AFMode)
             ),
-            "EvfAFMode": _enum_supported_names(
-                PropID.Evf_AFMode,
+            "EvfAFMode": enum_supported_names(
                 EvfAFMode,
                 self._get_supported_codes(PropID.Evf_AFMode),
             ),
@@ -1043,14 +708,6 @@ class CameraController:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
         return int(edsdk.GetPropertyData(self._cam, PropID.ImageQuality, 0))
-
-    def includes_raw(self) -> bool:
-        """Check if current ImageQuality setting includes RAW capture."""
-        return _image_quality_includes_raw(self.get_image_quality_code())
-
-    def is_raw_only(self) -> bool:
-        """Check if current ImageQuality setting is RAW-only (no JPEG/HEIF)."""
-        return _image_quality_is_raw_only(self.get_image_quality_code())
 
     # ---------- UI Lock/Unlock ----------
     def lock_ui(self) -> None:
@@ -1078,10 +735,7 @@ class CameraController:
     ) -> List[str]:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
-        with self._saved_lock:
-            self._saved_paths.clear()
-            self._downloaded_paths.clear()
-            self._download_errors.clear()
+        self._transfers.reset_paths_and_errors()
         if filename is not None:
             if shots != 1:
                 raise ValueError("filename can be used only when shots=1")
@@ -1092,9 +746,7 @@ class CameraController:
             while True:
                 try:
                     self._log(f"Trigger shot {i + 1}/{shots}")
-                    with self._saved_lock:
-                        completed_before = self._completed_transfers
-                        errors_before = len(self._download_errors)
+                    completed_before, errors_before = self._transfers.capture_baseline()
                     self._wait_for_inflight_slot(timeout)
                     edsdk.SendCommand(self._cam, CameraCommand.TakePicture, 0)
                     self._wait_for_transfer(timeout, completed_before, errors_before)
@@ -1107,8 +759,7 @@ class CameraController:
                     time.sleep(retry_delay)
             if interval > 0 and i < shots - 1:
                 time.sleep(interval)
-        with self._saved_lock:
-            return list(self._saved_paths)
+        return self._transfers.saved_paths_snapshot()
 
     def capture_async(
         self,
@@ -1128,8 +779,7 @@ class CameraController:
             if shots != 1:
                 raise ValueError("filename can be used only when shots=1")
             self._next_filename = filename
-        with self._saved_lock:
-            marker = self._completed_transfers
+        marker = self._transfers.marker()
         for i in range(max(1, shots)):
             self._log(f"Trigger async shot {i + 1}/{shots}")
             self._wait_for_inflight_slot()
@@ -1170,10 +820,7 @@ class CameraController:
                 validate=False,
                 tolerate_not_supported=True,
             )
-        with self._saved_lock:
-            marker = self._completed_transfers
-            queued_before = self._queued_transfers
-            errors_before = len(self._download_errors)
+        marker, queued_before, errors_before = self._transfers.snapshot_for_burst()
         shutter_pressed = False
         queued_now = queued_before
         try:
@@ -1186,12 +833,10 @@ class CameraController:
             shutter_pressed = True
             while True:
                 _pump_messages_once()
-                with self._saved_lock:
-                    queued_now = self._queued_transfers
-                    inflight = self._queued_transfers - self._finished_transfers
-                    if len(self._download_errors) > errors_before:
-                        msg = self._download_errors[-1]
-                        raise RuntimeError(f"Image download failed: {msg}")
+                queued_now, inflight = self._transfers.burst_progress()
+                latest_error = self._transfers.has_new_error(errors_before)
+                if latest_error is not None:
+                    raise RuntimeError(f"Image download failed: {latest_error}")
                 if duration is not None:
                     if (time.time() - burst_start) >= duration:
                         break
@@ -1245,10 +890,7 @@ class CameraController:
         """Capture burst and wait for files to be downloaded."""
         if self._cam is None:
             raise RuntimeError("Camera session not open")
-        with self._saved_lock:
-            self._saved_paths.clear()
-            self._downloaded_paths.clear()
-            self._download_errors.clear()
+        self._transfers.reset_paths_and_errors()
         expected = max(1, int(shots))
         ticket = self.capture_burst_async(
             shots=expected,
@@ -1277,47 +919,26 @@ class CameraController:
         marker: Optional[int] = None,
     ) -> List[str]:
         """Wait until expected number of downloads complete after marker."""
-        if expected <= 0:
-            return []
-        with self._saved_lock:
-            start_completed = self._completed_transfers if marker is None else marker
-            start_errors = len(self._download_errors)
-        target = start_completed + expected
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            time.sleep(0.01)
-            _pump_messages_once()
-            with self._saved_lock:
-                if len(self._download_errors) > start_errors:
-                    msg = self._download_errors[-1]
-                    raise RuntimeError(f"Image download failed: {msg}")
-                if self._completed_transfers >= target:
-                    break
-        else:
-            raise TimeoutError("Timed out waiting for downloaded images")
-        return self.drain_downloads()
+        return self._transfers.wait_for_downloads(
+            _pump_messages_once,
+            expected=expected,
+            timeout=timeout,
+            marker=marker,
+        )
 
     def drain_downloads(self) -> List[str]:
         """Return completed download paths since last drain."""
-        with self._saved_lock:
-            paths = list(self._downloaded_paths)
-            self._downloaded_paths.clear()
-        return paths
+        return self._transfers.drain_downloads()
 
     def _wait_for_transfer(
         self, timeout: float, completed_before: int, errors_before: int
     ) -> None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            time.sleep(0.01)
-            _pump_messages_once()
-            with self._saved_lock:
-                if len(self._download_errors) > errors_before:
-                    msg = self._download_errors[-1]
-                    raise RuntimeError(f"Image download failed: {msg}")
-                if self._completed_transfers > completed_before:
-                    return
-        raise TimeoutError("Timed out waiting for image transfer event")
+        self._transfers.wait_for_transfer(
+            _pump_messages_once,
+            timeout=timeout,
+            completed_before=completed_before,
+            errors_before=errors_before,
+        )
 
     # ---------- Capture to memory ----------
     def capture_bytes(
@@ -1352,179 +973,6 @@ class CameraController:
                     except Exception:
                         pass
         return data_list
-
-    def capture_pil(
-        self,
-        shots: int = 1,
-        timeout: float = 5.0,
-        *,
-        interval: float = 0.0,
-        retry: int = 0,
-        retry_delay: float = 0.3,
-        keep_files: bool = False,
-        raw_processor: Optional[RawProcessor] = None,
-    ) -> List["Image.Image"]:
-        """Capture and return a list of PIL Images (requires Pillow).
-
-        Args:
-            shots: Number of shots to capture.
-            timeout: Timeout in seconds for each shot transfer.
-            interval: Interval in seconds between shots.
-            retry: Number of retries on timeout.
-            retry_delay: Delay in seconds between retries.
-            keep_files: If True, keep captured files on disk.
-            raw_processor: Callback to develop RAW images.
-                           Must conform to RawProcessor protocol:
-                           (raw_bytes: bytes) -> PIL.Image.Image
-                           Required if camera is set to RAW or RAW+JPEG mode.
-                           See RawProcessor docstring for examples.
-
-        Returns:
-            List of PIL Image objects.
-
-        Raises:
-            ValueError: If RAW capture is enabled but no raw_processor provided.
-            TypeError: If raw_processor has invalid signature.
-            RuntimeError: If Pillow is not installed or camera session not open.
-        """
-        try:
-            from PIL import Image  # type: ignore
-        except Exception as e:
-            raise RuntimeError("Pillow (PIL) is required for capture_pil()") from e
-
-        # Check current ImageQuality setting before capture
-        if self._cam is None:
-            raise RuntimeError("Camera session not open")
-
-        quality_code = self.get_image_quality_code()
-        includes_raw = _image_quality_includes_raw(quality_code)
-
-        # Validate raw_processor if provided
-        if raw_processor is not None:
-            _validate_raw_processor(raw_processor)
-
-        if includes_raw and raw_processor is None:
-            # Get human-readable name for error message
-            quality_name = "Unknown"
-            for name, member in ImageQuality.__members__.items():
-                if int(member) == quality_code:
-                    quality_name = name
-                    break
-            raise ValueError(
-                f"Camera ImageQuality is set to '{quality_name}' which includes RAW, "
-                "but no raw_processor was provided.\n"
-                "Either pass a raw_processor callback or change camera to JPEG-only mode.\n"
-                "See RawProcessor docstring for implementation examples."
-            )
-
-        # Capture files
-        paths = self.capture(
-            shots=shots,
-            timeout=timeout,
-            interval=interval,
-            retry=retry,
-            retry_delay=retry_delay,
-        )
-
-        images: List["Image.Image"] = []
-        for p in paths:
-            try:
-                with open(p, "rb") as f:
-                    raw_bytes = f.read()
-
-                # Determine if this specific file is RAW by extension
-                if _is_raw_file(p):
-                    # RAW file: use processor
-                    if raw_processor is not None:
-                        self._log(
-                            f"Processing RAW file with raw_processor: {os.path.basename(p)}"
-                        )
-                        img = raw_processor(raw_bytes)
-                        # Validate return type
-                        if not isinstance(img, Image.Image):
-                            raise TypeError(
-                                f"raw_processor must return PIL.Image.Image, "
-                                f"but got {type(img).__name__}.\n"
-                                "See RawProcessor docstring for correct implementation."
-                            )
-                    else:
-                        # This shouldn't happen if we checked above, but safety fallback
-                        raise RuntimeError(
-                            f"RAW file detected ({os.path.basename(p)}), "
-                            "but no raw_processor provided."
-                        )
-                else:
-                    # JPEG/HEIF: let Pillow handle it
-                    self._log(f"Loading image with Pillow: {os.path.basename(p)}")
-                    img = Image.open(io.BytesIO(raw_bytes))
-                    img.load()  # fully load to detach from BytesIO
-
-                images.append(img)
-            except Exception as e:
-                # Re-raise with more context
-                if _is_raw_file(p) and raw_processor is None:
-                    raise RuntimeError(
-                        f"Failed to process {os.path.basename(p)}. "
-                        "If this is a RAW file, provide a raw_processor callback."
-                    ) from e
-                raise
-            finally:
-                if not keep_files:
-                    try:
-                        os.remove(p)
-                    except Exception:
-                        pass
-
-        return images
-
-    def capture_numpy(
-        self,
-        shots: int = 1,
-        timeout: float = 5.0,
-        *,
-        interval: float = 0.0,
-        retry: int = 0,
-        retry_delay: float = 0.3,
-        keep_files: bool = False,
-        raw_processor: Optional[RawProcessor] = None,
-    ) -> List["np.ndarray"]:
-        """Capture and return a list of numpy arrays (requires numpy).
-
-        Args:
-            shots: Number of shots to capture.
-            timeout: Timeout in seconds for each shot transfer.
-            interval: Interval in seconds between shots.
-            retry: Number of retries on timeout.
-            retry_delay: Delay in seconds between retries.
-            keep_files: If True, keep captured files on disk.
-            raw_processor: Callback to develop RAW images.
-                           Must conform to RawProcessor protocol:
-                           (raw_bytes: bytes) -> PIL.Image.Image
-                           Required if camera is set to RAW or RAW+JPEG mode.
-                           See RawProcessor docstring for examples.
-
-        Returns:
-            List of numpy arrays (RGB format).
-
-        Raises:
-            ValueError: If RAW capture is enabled but no raw_processor provided.
-            TypeError: If raw_processor has invalid signature.
-            RuntimeError: If numpy is not installed or camera session not open.
-        """
-        try:
-            import numpy as np  # type: ignore
-        except Exception as e:
-            raise RuntimeError("numpy is required for capture_numpy()") from e
-        pil_images = self.capture_pil(
-            shots=shots,
-            timeout=timeout,
-            interval=interval,
-            retry=retry,
-            retry_delay=retry_delay,
-            keep_files=keep_files,
-            raw_processor=raw_processor,
-        )
-        return [np.array(im) for im in pil_images]
 
     # ---------- Live View ----------
     def start_live_view(self) -> None:
@@ -1734,19 +1182,6 @@ class CameraController:
                 self._log("Error getting focus info from camera")
         return meta
 
-
-def _iso_code_to_string(code: int) -> str:
-    try:
-        if code == int(ISOSpeedCamera.ISOAuto):
-            return "Auto"
-        for name in ISOSpeedCamera.__members__:
-            if int(getattr(ISOSpeedCamera, name)) == code:
-                return name.replace("ISO", "")
-    except Exception:
-        pass
-    return str(code)
-
-
 def classify_error(exc: Exception) -> Dict[str, Union[int, str, None]]:
     """Return a structured error info for EdsError exceptions.
     Includes SDK error code and human-readable message from edsdk_utils.
@@ -1761,54 +1196,3 @@ def classify_error(exc: Exception) -> Dict[str, Union[int, str, None]]:
     except Exception:
         pass
     return {"message": str(exc)}
-
-
-def _enum_code(enum_cls: Type[object], value: Union[str, int]) -> int:
-    if isinstance(value, int):
-        return int(value)
-    key = str(value).strip()
-    # Friendly aliases for some enums
-    alias_key = key.lower().replace(" ", "").replace("-", "").replace("_", "")
-    try:
-        enum_name = enum_cls.__name__
-    except Exception:
-        enum_name = ""
-    # MeteringMode aliases
-    if enum_name == "MeteringMode":
-        aliases = {
-            "evaluative": "EvaluativeMetering",
-            "spot": "PartialMetering",
-            "partial": "PartialMetering",
-            "centerweighted": "CenterWeightedAveragingMetering",
-            "centerweightedaverage": "CenterWeightedAveragingMetering",
-            "average": "CenterWeightedAveragingMetering",
-        }
-        if alias_key in aliases:
-            key = aliases[alias_key]
-    # Accept case-insensitive and some friendly aliases
-    for name, member in enum_cls.__members__.items():
-        if name.lower() == key.lower():
-            return int(member)
-    # Also accept numeric string
-    if key.isdigit():
-        return int(key)
-    raise ValueError(f"Unsupported value '{value}' for {enum_cls.__name__}")
-
-
-def _enum_supported_names(
-    pid: _PropIDEnum, enum_cls: Type[object], codes: List[int]
-) -> List[str]:
-    names: List[str] = []
-    if not codes:
-        # if descriptors not available, return all enum names as hint
-        return list(enum_cls.__members__.keys())
-    for code in codes:
-        matched = False
-        for name, member in enum_cls.__members__.items():
-            if int(member) == int(code):
-                names.append(name)
-                matched = True
-                break
-        if not matched:
-            names.append(str(code))
-    return names
