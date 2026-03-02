@@ -7,8 +7,12 @@ import asyncio
 import time
 import uuid
 import inspect
+import queue
+import threading
+from collections import deque
 from typing import (
     Callable,
+    Deque,
     Dict,
     List,
     Optional,
@@ -437,6 +441,8 @@ class CameraController:
         register_flash_events: bool = True,
         file_pattern: Optional[str] = None,
         seq_start: int = 1,
+        max_inflight: Optional[int] = None,
+        inflight_wait_timeout: Optional[float] = None,
     ) -> None:
         self.index = index
         self.save_dir = save_dir
@@ -462,9 +468,26 @@ class CameraController:
         self._register_flash_events = register_flash_events
         self._file_pattern = file_pattern
         self._seq = int(seq_start)
+        self._max_inflight = max_inflight if max_inflight is None else int(max_inflight)
+        if self._max_inflight is not None and self._max_inflight <= 0:
+            raise ValueError("max_inflight must be > 0 when specified")
+        self._inflight_wait_timeout = inflight_wait_timeout
         # One-shot explicit filename (base name); if set, next capture uses this name
         self._next_filename: Optional[str] = None
         self._flash_ref: Optional[EdsObject] = None
+        # Background transfer pipeline
+        self._download_q: "queue.Queue[Tuple[EdsObject, Optional[str]]]" = queue.Queue()
+        self._download_stop = threading.Event()
+        self._download_thread: Optional[threading.Thread] = None
+        # Non-Windows uses polling GetEvent; keep pumping in background for async capture.
+        self._pump_stop = threading.Event()
+        self._pump_thread: Optional[threading.Thread] = None
+        self._saved_lock = threading.Lock()
+        self._downloaded_paths: Deque[str] = deque()
+        self._download_errors: List[str] = []
+        self._completed_transfers = 0
+        self._finished_transfers = 0
+        self._queued_transfers = 0
 
     # ---------- Lifecycle ----------
     def __enter__(self) -> "CameraController":
@@ -516,10 +539,12 @@ class CameraController:
                 self._log(f"Flash control unavailable: {e}")
       
         self._cam = cam
+        self._start_background_workers()
         self._log("Camera session opened")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop_background_workers()
         try:
             if self._cam is not None:
                 try:
@@ -544,6 +569,102 @@ class CameraController:
 
     def on_flash_property(self, fn: PropertyCallback) -> None:
         self._flash_prop_cb = fn
+
+    def _start_background_workers(self) -> None:
+        if self._download_thread is None or not self._download_thread.is_alive():
+            self._download_stop.clear()
+            self._download_thread = threading.Thread(
+                target=self._download_worker,
+                name="edsdk-download-worker",
+                daemon=True,
+            )
+            self._download_thread.start()
+        if os.name != "nt" and (self._pump_thread is None or not self._pump_thread.is_alive()):
+            self._pump_stop.clear()
+            self._pump_thread = threading.Thread(
+                target=self._event_pump_worker,
+                name="edsdk-event-pump",
+                daemon=True,
+            )
+            self._pump_thread.start()
+
+    def _stop_background_workers(self) -> None:
+        self._pump_stop.set()
+        if self._pump_thread is not None:
+            self._pump_thread.join(timeout=1.0)
+        self._pump_thread = None
+        self._download_stop.set()
+        if self._download_thread is not None:
+            self._download_thread.join()
+        self._download_thread = None
+
+    def _event_pump_worker(self) -> None:
+        while not self._pump_stop.is_set():
+            _pump_messages_once()
+            time.sleep(0.005)
+
+    def _download_worker(self) -> None:
+        while True:
+            if self._download_stop.is_set() and self._download_q.empty():
+                return
+            try:
+                object_handle, dst_name = self._download_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                path = _save_directory_item(
+                    object_handle, self.save_dir, dst_basename=dst_name
+                )
+                with self._saved_lock:
+                    self._saved_paths.append(path)
+                    self._downloaded_paths.append(path)
+                    self._completed_transfers += 1
+                    self._finished_transfers += 1
+                self._enqueue_async_event(
+                    {
+                        "kind": "object",
+                        "event": "DirItemDownloaded",
+                        "path": path,
+                    }
+                )
+            except Exception as exc:
+                with self._saved_lock:
+                    self._download_errors.append(str(exc))
+                    self._finished_transfers += 1
+                self._enqueue_async_event(
+                    {
+                        "kind": "object",
+                        "event": "DirItemDownloadError",
+                        "message": str(exc),
+                    }
+                )
+            finally:
+                self._download_q.task_done()
+
+    def _queue_transfer(
+        self, object_handle: EdsObject, dst_name: Optional[str]
+    ) -> None:
+        with self._saved_lock:
+            self._queued_transfers += 1
+        self._download_q.put((object_handle, dst_name))
+
+    def _wait_for_inflight_slot(self, timeout: Optional[float] = None) -> None:
+        if self._max_inflight is None:
+            return
+        if timeout is None:
+            timeout = self._inflight_wait_timeout
+        deadline = None if timeout is None else (time.time() + timeout)
+        while True:
+            with self._saved_lock:
+                inflight = self._queued_transfers - self._finished_transfers
+                if inflight < self._max_inflight:
+                    return
+            if deadline is not None and time.time() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for inflight slot (max_inflight={self._max_inflight})"
+                )
+            _pump_messages_once()
+            time.sleep(0.005)
 
     def _on_object_event(self, event: ObjectEvent, object_handle: EdsObject) -> int:
         if event == ObjectEvent.DirItemRequestTransfer:
@@ -584,15 +705,11 @@ class CameraController:
                 except Exception:
                     dst_name = None
 
-            path = _save_directory_item(
-                object_handle, self.save_dir, dst_basename=dst_name
-            )
-            self._saved_paths.append(path)
+            self._queue_transfer(object_handle, dst_name)
             self._enqueue_async_event(
                 {
                     "kind": "object",
-                    "event": getattr(ObjectEvent, "DirItemRequestTransfer").name,
-                    "path": path,
+                    "event": "DirItemQueued",
                 }
             )
         else:
@@ -961,7 +1078,10 @@ class CameraController:
     ) -> List[str]:
         if self._cam is None:
             raise RuntimeError("Camera session not open")
-        self._saved_paths.clear()
+        with self._saved_lock:
+            self._saved_paths.clear()
+            self._downloaded_paths.clear()
+            self._download_errors.clear()
         if filename is not None:
             if shots != 1:
                 raise ValueError("filename can be used only when shots=1")
@@ -972,8 +1092,12 @@ class CameraController:
             while True:
                 try:
                     self._log(f"Trigger shot {i + 1}/{shots}")
+                    with self._saved_lock:
+                        completed_before = self._completed_transfers
+                        errors_before = len(self._download_errors)
+                    self._wait_for_inflight_slot(timeout)
                     edsdk.SendCommand(self._cam, CameraCommand.TakePicture, 0)
-                    self._wait_for_transfer(timeout)
+                    self._wait_for_transfer(timeout, completed_before, errors_before)
                     break
                 except TimeoutError:
                     if attempt >= retry:
@@ -983,16 +1107,216 @@ class CameraController:
                     time.sleep(retry_delay)
             if interval > 0 and i < shots - 1:
                 time.sleep(interval)
-        return list(self._saved_paths)
+        with self._saved_lock:
+            return list(self._saved_paths)
 
-    def _wait_for_transfer(self, timeout: float) -> None:
+    def capture_async(
+        self,
+        shots: int = 1,
+        *,
+        interval: float = 0.0,
+        filename: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Trigger capture and return immediately.
+
+        Returns a marker dictionary for `wait_for_downloads()`:
+            {"marker": <completed_before>, "expected": <shots>}
+        """
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        if filename is not None:
+            if shots != 1:
+                raise ValueError("filename can be used only when shots=1")
+            self._next_filename = filename
+        with self._saved_lock:
+            marker = self._completed_transfers
+        for i in range(max(1, shots)):
+            self._log(f"Trigger async shot {i + 1}/{shots}")
+            self._wait_for_inflight_slot()
+            edsdk.SendCommand(self._cam, CameraCommand.TakePicture, 0)
+            if interval > 0 and i < shots - 1:
+                time.sleep(interval)
+        return {"marker": marker, "expected": max(1, shots)}
+
+    def capture_burst_async(
+        self,
+        shots: int = 1,
+        timeout: float = 5.0,
+        *,
+        duration: Optional[float] = None,
+        drive_mode: Union[str, int] = DriveMode.HighSpeedContinuous,
+        apply_drive_mode: bool = True,
+        poll_interval: float = 0.005,
+    ) -> Dict[str, int]:
+        """Trigger continuous burst capture and return immediately.
+
+        Returns a marker dictionary for `wait_for_downloads()`:
+            {"marker": <completed_before>, "expected": <queued_during_burst>}
+        """
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        if duration is not None and duration <= 0:
+            raise ValueError("duration must be > 0 when specified")
+        target = max(1, int(shots))
+        burst_start = time.time()
+        if duration is not None:
+            # Keep timeout as safety guard but never shorter than requested duration.
+            deadline = burst_start + max(float(timeout), float(duration) + 1.0)
+        else:
+            deadline = burst_start + float(timeout)
+        if apply_drive_mode:
+            self.set_properties(
+                drive_mode=drive_mode,
+                validate=False,
+                tolerate_not_supported=True,
+            )
+        with self._saved_lock:
+            marker = self._completed_transfers
+            queued_before = self._queued_transfers
+            errors_before = len(self._download_errors)
+        shutter_pressed = False
+        queued_now = queued_before
+        try:
+            self._wait_for_inflight_slot(timeout)
+            edsdk.SendCommand(
+                self._cam,
+                CameraCommand.PressShutterButton,
+                int(ShutterButton.Completely),
+            )
+            shutter_pressed = True
+            while True:
+                _pump_messages_once()
+                with self._saved_lock:
+                    queued_now = self._queued_transfers
+                    inflight = self._queued_transfers - self._finished_transfers
+                    if len(self._download_errors) > errors_before:
+                        msg = self._download_errors[-1]
+                        raise RuntimeError(f"Image download failed: {msg}")
+                if duration is not None:
+                    if (time.time() - burst_start) >= duration:
+                        break
+                elif queued_now - queued_before >= target:
+                    break
+                if time.time() >= deadline:
+                    raise TimeoutError("Timed out waiting for burst transfer events")
+                # If inflight cap is reached during burst, pause shutter until queue drains.
+                if self._max_inflight is not None and inflight >= self._max_inflight:
+                    if shutter_pressed:
+                        edsdk.SendCommand(
+                            self._cam,
+                            CameraCommand.PressShutterButton,
+                            int(ShutterButton.OFF),
+                        )
+                        shutter_pressed = False
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise TimeoutError("Timed out waiting for burst transfer events")
+                    self._wait_for_inflight_slot(remaining)
+                    edsdk.SendCommand(
+                        self._cam,
+                        CameraCommand.PressShutterButton,
+                        int(ShutterButton.Completely),
+                    )
+                    shutter_pressed = True
+                time.sleep(max(0.001, poll_interval))
+        finally:
+            try:
+                edsdk.SendCommand(
+                    self._cam,
+                    CameraCommand.PressShutterButton,
+                    int(ShutterButton.OFF),
+                )
+            except Exception:
+                pass
+        expected = (queued_now - queued_before) if duration is not None else target
+        return {"marker": marker, "expected": max(0, expected)}
+
+    def capture_burst(
+        self,
+        shots: int = 1,
+        timeout: float = 5.0,
+        *,
+        duration: Optional[float] = None,
+        download_timeout: Optional[float] = None,
+        drive_mode: Union[str, int] = DriveMode.HighSpeedContinuous,
+        apply_drive_mode: bool = True,
+        poll_interval: float = 0.005,
+    ) -> List[str]:
+        """Capture burst and wait for files to be downloaded."""
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        with self._saved_lock:
+            self._saved_paths.clear()
+            self._downloaded_paths.clear()
+            self._download_errors.clear()
+        expected = max(1, int(shots))
+        ticket = self.capture_burst_async(
+            shots=expected,
+            timeout=timeout,
+            duration=duration,
+            drive_mode=drive_mode,
+            apply_drive_mode=apply_drive_mode,
+            poll_interval=poll_interval,
+        )
+        wait_timeout = (
+            float(download_timeout)
+            if download_timeout is not None
+            else max(30.0, float(expected) * 5.0)
+        )
+        return self.wait_for_downloads(
+            expected=ticket["expected"],
+            timeout=wait_timeout,
+            marker=ticket["marker"],
+        )
+
+    def wait_for_downloads(
+        self,
+        expected: int,
+        timeout: float = 30.0,
+        *,
+        marker: Optional[int] = None,
+    ) -> List[str]:
+        """Wait until expected number of downloads complete after marker."""
+        if expected <= 0:
+            return []
+        with self._saved_lock:
+            start_completed = self._completed_transfers if marker is None else marker
+            start_errors = len(self._download_errors)
+        target = start_completed + expected
         deadline = time.time() + timeout
-        already = len(self._saved_paths)
         while time.time() < deadline:
             time.sleep(0.01)
             _pump_messages_once()
-            if len(self._saved_paths) > already:
-                return
+            with self._saved_lock:
+                if len(self._download_errors) > start_errors:
+                    msg = self._download_errors[-1]
+                    raise RuntimeError(f"Image download failed: {msg}")
+                if self._completed_transfers >= target:
+                    break
+        else:
+            raise TimeoutError("Timed out waiting for downloaded images")
+        return self.drain_downloads()
+
+    def drain_downloads(self) -> List[str]:
+        """Return completed download paths since last drain."""
+        with self._saved_lock:
+            paths = list(self._downloaded_paths)
+            self._downloaded_paths.clear()
+        return paths
+
+    def _wait_for_transfer(
+        self, timeout: float, completed_before: int, errors_before: int
+    ) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.01)
+            _pump_messages_once()
+            with self._saved_lock:
+                if len(self._download_errors) > errors_before:
+                    msg = self._download_errors[-1]
+                    raise RuntimeError(f"Image download failed: {msg}")
+                if self._completed_transfers > completed_before:
+                    return
         raise TimeoutError("Timed out waiting for image transfer event")
 
     # ---------- Capture to memory ----------
