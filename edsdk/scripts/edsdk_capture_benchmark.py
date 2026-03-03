@@ -27,11 +27,11 @@ EDSDK_PYTHON_DIR = REPO_ROOT / "edsdk-python"
 if str(EDSDK_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(EDSDK_PYTHON_DIR))
 
-import edsdk
-from edsdk.camera_controller import CameraController
-from edsdk.constants.commands import CameraCommand, ShutterButton
-from edsdk.constants.generic import ObjectEvent
-from edsdk.constants.properties import DriveMode, PropID, SaveTo
+import edsdk  # noqa: E402
+from edsdk.camera_controller import CameraController  # noqa: E402
+from edsdk.constants.commands import CameraCommand, ShutterButton  # noqa: E402
+from edsdk.constants.generic import ObjectEvent  # noqa: E402
+from edsdk.constants.properties import DriveMode, PropID, SaveTo  # noqa: E402
 
 
 @dataclass
@@ -41,6 +41,37 @@ class ScenarioResult:
     elapsed_s: Optional[float]
     ok: bool
     detail: str = ""
+
+
+def is_device_busy(exc: Exception) -> bool:
+    msg = str(exc).upper()
+    code = getattr(exc, "code", None)
+    # 0x81 == EDS_ERR_DEVICE_BUSY / PTP device busy.
+    return code == 0x00000081 or "DEVICE_BUSY" in msg
+
+
+def run_with_busy_retry(
+    fn: Callable[[], None],
+    *,
+    retries: int,
+    base_delay_s: float,
+    on_retry: Optional[Callable[[], None]] = None,
+) -> None:
+    attempt = 0
+    while True:
+        try:
+            fn()
+            return
+        except Exception as exc:
+            if not is_device_busy(exc) or attempt >= retries:
+                raise
+            attempt += 1
+            if on_retry is not None:
+                try:
+                    on_retry()
+                except Exception:
+                    pass
+            time.sleep(base_delay_s * attempt)
 
 
 class ObjectEventCounter:
@@ -87,10 +118,34 @@ def run_host_blocking(controller: CameraController, shots: int, timeout_s: float
 
 
 def run_host_async(controller: CameraController, shots: int, timeout_s: float) -> None:
-    ticket = controller.capture_async(shots=shots)
+    # Trigger asynchronously one shot at a time so DEVICE_BUSY can be retried
+    # per trigger without discarding the whole scenario.
+    first_ticket = None
+    expected_total = 0
+    for _ in range(shots):
+        holder: List[dict] = []
+
+        def _trigger_once() -> None:
+            holder.clear()
+            holder.append(controller.capture_async(shots=1))
+
+        run_with_busy_retry(
+            _trigger_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+        ticket = holder[0]
+        if first_ticket is None:
+            first_ticket = ticket
+        expected_total += int(ticket["expected"])
+
+    if first_ticket is None:
+        raise RuntimeError("No async capture ticket received")
+
     paths = controller.wait_for_downloads(
-        expected=ticket["expected"],
-        marker=ticket["marker"],
+        expected=expected_total,
+        marker=first_ticket["marker"],
         timeout=max(timeout_s, shots * 5.0),
     )
     if len(paths) < shots:
@@ -98,12 +153,26 @@ def run_host_async(controller: CameraController, shots: int, timeout_s: float) -
 
 
 def run_host_burst_async(controller: CameraController, shots: int, timeout_s: float) -> None:
-    ticket = controller.capture_burst_async(
-        shots=shots,
-        timeout=max(timeout_s, shots * 2.0),
-        drive_mode=DriveMode.HighSpeedContinuous,
-        apply_drive_mode=True,
+    ticket_holder: List[dict] = []
+
+    def _burst_once() -> None:
+        ticket_holder.clear()
+        ticket_holder.append(
+            controller.capture_burst_async(
+                shots=shots,
+                timeout=max(timeout_s, shots * 2.0),
+                drive_mode=DriveMode.HighSpeedContinuous,
+                apply_drive_mode=True,
+            )
+        )
+
+    run_with_busy_retry(
+        _burst_once,
+        retries=6,
+        base_delay_s=0.08,
+        on_retry=lambda: controller.wake_up(),
     )
+    ticket = ticket_holder[0]
     paths = controller.wait_for_downloads(
         expected=ticket["expected"],
         marker=ticket["marker"],
@@ -122,7 +191,16 @@ def run_camera_blocking(
         raise RuntimeError("Camera session not open")
     for _ in range(shots):
         start = counter.snapshot()
-        edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+
+        def _shot_once() -> None:
+            edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+
+        run_with_busy_retry(
+            _shot_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
         if not counter.wait_for_delta(start=start, expected_delta=1, timeout_s=timeout_s):
             raise TimeoutError("Timed out waiting for DirItemCreated in blocking SD mode")
 
@@ -134,7 +212,15 @@ def run_camera_async(
         raise RuntimeError("Camera session not open")
     start = counter.snapshot()
     for _ in range(shots):
-        edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+        def _shot_once() -> None:
+            edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+
+        run_with_busy_retry(
+            _shot_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
     if not counter.wait_for_delta(start=start, expected_delta=shots, timeout_s=timeout_s):
         raise TimeoutError("Timed out waiting for DirItemCreated in async SD mode")
 
@@ -152,10 +238,15 @@ def run_camera_burst_async(
     start = counter.snapshot()
     shutter_pressed = False
     try:
-        edsdk.SendCommand(
-            controller._cam,
-            CameraCommand.PressShutterButton,
-            int(ShutterButton.Completely),
+        run_with_busy_retry(
+            lambda: edsdk.SendCommand(
+                controller._cam,
+                CameraCommand.PressShutterButton,
+                int(ShutterButton.Completely),
+            ),
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
         )
         shutter_pressed = True
         if not counter.wait_for_delta(start=start, expected_delta=shots, timeout_s=timeout_s):
@@ -271,6 +362,12 @@ def main() -> int:
             save_label = "host" if save_to == SaveTo.Host else "camera_sd"
             scenario_name = f"{mode_name}"
             try:
+                # Keep each scenario independent and let the camera settle.
+                try:
+                    controller.wake_up()
+                except Exception:
+                    pass
+                time.sleep(0.2)
                 set_save_target(controller, save_to)
                 elapsed = timed_run(lambda: runner(controller))
                 results.append(
@@ -284,6 +381,7 @@ def main() -> int:
                 print(
                     f"Completed {scenario_name:>11} / {save_label:<9} in {elapsed:.3f}s"
                 )
+                time.sleep(0.3)
             except Exception as exc:
                 results.append(
                     ScenarioResult(
