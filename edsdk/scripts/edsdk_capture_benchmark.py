@@ -30,7 +30,12 @@ import edsdk  # noqa: E402
 from edsdk.camera_controller import CameraController  # noqa: E402
 from edsdk.constants.commands import CameraCommand, ShutterButton  # noqa: E402
 from edsdk.constants.generic import ObjectEvent  # noqa: E402
-from edsdk.constants.properties import DriveMode, PropID, SaveTo  # noqa: E402
+from edsdk.constants.properties import (  # noqa: E402
+    DriveMode,
+    ImageQuality,
+    PropID,
+    SaveTo,
+)
 
 
 @dataclass
@@ -170,6 +175,47 @@ def set_save_target(controller: CameraController, save_to: SaveTo) -> None:
         raise RuntimeError("Camera session not open")
     edsdk.SetPropertyData(controller._cam, PropID.SaveTo, 0, int(save_to))
     controller.save_to = save_to
+
+
+def set_image_quality_low_jpeg(controller: CameraController) -> str:
+    """Set a low-quality JPEG mode with fallback candidates.
+
+    Returns the selected ImageQuality enum member name.
+    """
+    # Prefer small/normal JPEG when available; fall back to larger normal JPEG.
+    candidates = [
+        ImageQuality.SJN,
+        ImageQuality.S1JN,
+        ImageQuality.MJN,
+        ImageQuality.LJN,
+    ]
+    for quality in candidates:
+        try:
+            controller.set_properties(
+                image_quality=int(quality),
+                validate=False,
+                tolerate_not_supported=True,
+            )
+            return quality.name
+        except Exception:
+            continue
+    raise RuntimeError("Unable to set low-quality JPEG ImageQuality on this camera")
+
+
+def restore_image_quality_cr3(controller: CameraController) -> str:
+    """Best-effort restore to a CR3-capable raw format."""
+    # Prefer cRAW first (commonly used as .CR3), then RAW.
+    for quality in (ImageQuality.CR, ImageQuality.LR):
+        try:
+            controller.set_properties(
+                image_quality=int(quality),
+                validate=False,
+                tolerate_not_supported=True,
+            )
+            return quality.name
+        except Exception:
+            continue
+    raise RuntimeError("Unable to restore image quality to CR3-compatible raw mode")
 
 
 def run_host_blocking(controller: CameraController, shots: int, timeout_s: float) -> None:
@@ -667,6 +713,16 @@ def print_results(results: List[ScenarioResult], run_seconds: float) -> None:
     print("-" * 138)
 
 
+def configure_capture_format(controller: CameraController, capture_format: str) -> str:
+    """Apply requested capture format and return display label."""
+    if capture_format == "current":
+        return "current"
+    if capture_format == "low_jpeg":
+        selected = set_image_quality_low_jpeg(controller)
+        return f"low_jpeg({selected})"
+    raise ValueError(f"Unknown capture format: {capture_format}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark EDSDK capture timing across capture modes and save targets.",
@@ -711,6 +767,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=20.0,
         help="Max extra wait for late frames/transfers before finalizing counts (default: 20)",
+    )
+    parser.add_argument(
+        "--capture-format",
+        choices=("current", "low_jpeg"),
+        default="current",
+        help="Capture encoding for benchmark: keep current camera format or force low-quality JPEG",
     )
     return parser.parse_args()
 
@@ -835,101 +897,110 @@ def main() -> int:
         verbose=args.verbose,
     ) as controller:
         controller.on_object(event_counter.callback)
-
-        for mode_name, save_to, runner in scenarios:
-            save_label = "host" if save_to == SaveTo.Host else "camera_sd"
-            scenario_name = f"{mode_name}"
-            try:
-                # Keep each scenario independent and let the camera settle.
+        selected_format = configure_capture_format(controller, args.capture_format)
+        print(f"Capture format: {selected_format}")
+        try:
+            for mode_name, save_to, runner in scenarios:
+                save_label = "host" if save_to == SaveTo.Host else "camera_sd"
+                scenario_name = f"{mode_name}"
                 try:
-                    controller.wake_up()
-                except Exception:
-                    pass
-                time.sleep(0.2)
-                run_start = time.perf_counter()
-                host_before = 0
-                cam_before = 0
-                if save_to == SaveTo.Host:
-                    # Use actual files written as authoritative frame count for host runs.
-                    os.makedirs(args.save_dir, exist_ok=True)
-                    controller.save_dir = args.save_dir
-                    host_before = count_files_recursive(args.save_dir)
-                else:
-                    cam_before = event_counter.snapshot()
-                set_save_target(controller, save_to)
-                stats = runner(controller)
-                if save_to == SaveTo.Host:
-                    host_after = wait_for_file_quiet(
-                        args.save_dir,
-                        quiet_s=max(0.2, args.settle_seconds),
-                        max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                    # Keep each scenario independent and let the camera settle.
+                    try:
+                        controller.wake_up()
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                    run_start = time.perf_counter()
+                    host_before = 0
+                    cam_before = 0
+                    if save_to == SaveTo.Host:
+                        # Use actual files written as authoritative frame count for host runs.
+                        os.makedirs(args.save_dir, exist_ok=True)
+                        controller.save_dir = args.save_dir
+                        host_before = count_files_recursive(args.save_dir)
+                    else:
+                        cam_before = event_counter.snapshot()
+                    set_save_target(controller, save_to)
+                    stats = runner(controller)
+                    if save_to == SaveTo.Host:
+                        host_after = wait_for_file_quiet(
+                            args.save_dir,
+                            quiet_s=max(0.2, args.settle_seconds),
+                            max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                        )
+                        authoritative_frames = max(0, host_after - host_before)
+                        authoritative_e2e = time.perf_counter() - run_start
+                        stats = RunStats(
+                            frames=authoritative_frames,
+                            capture_elapsed_s=stats.capture_elapsed_s,
+                            end_to_end_elapsed_s=max(
+                                stats.end_to_end_elapsed_s, authoritative_e2e
+                            ),
+                        )
+                    else:
+                        # For camera SD, use settled DirItemCreated delta as
+                        # authoritative frame count for the scenario.
+                        cam_after = wait_for_event_quiet(
+                            event_counter,
+                            quiet_s=max(0.2, args.settle_seconds),
+                            max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                        )
+                        authoritative_frames = max(0, cam_after - cam_before)
+                        stats = RunStats(
+                            frames=authoritative_frames,
+                            capture_elapsed_s=stats.capture_elapsed_s,
+                            end_to_end_elapsed_s=max(
+                                stats.end_to_end_elapsed_s,
+                                time.perf_counter() - run_start,
+                            ),
+                        )
+                    capture_fps = (
+                        (stats.frames / stats.capture_elapsed_s)
+                        if stats.capture_elapsed_s > 0
+                        else None
                     )
-                    authoritative_frames = max(0, host_after - host_before)
-                    authoritative_e2e = time.perf_counter() - run_start
-                    stats = RunStats(
-                        frames=authoritative_frames,
-                        capture_elapsed_s=stats.capture_elapsed_s,
-                        end_to_end_elapsed_s=max(
-                            stats.end_to_end_elapsed_s, authoritative_e2e
-                        ),
+                    end_to_end_fps = (
+                        (stats.frames / stats.end_to_end_elapsed_s)
+                        if stats.end_to_end_elapsed_s > 0
+                        else None
                     )
-                else:
-                    # For camera SD, use settled DirItemCreated delta as
-                    # authoritative frame count for the scenario.
-                    cam_after = wait_for_event_quiet(
-                        event_counter,
-                        quiet_s=max(0.2, args.settle_seconds),
-                        max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                    results.append(
+                        ScenarioResult(
+                            name=scenario_name,
+                            save_target=save_label,
+                            frames=stats.frames,
+                            capture_elapsed_s=stats.capture_elapsed_s,
+                            end_to_end_elapsed_s=stats.end_to_end_elapsed_s,
+                            capture_fps=capture_fps,
+                            end_to_end_fps=end_to_end_fps,
+                            ok=True,
+                        )
                     )
-                    authoritative_frames = max(0, cam_after - cam_before)
-                    stats = RunStats(
-                        frames=authoritative_frames,
-                        capture_elapsed_s=stats.capture_elapsed_s,
-                        end_to_end_elapsed_s=max(
-                            stats.end_to_end_elapsed_s, time.perf_counter() - run_start
-                        ),
+                    print(
+                        f"Completed {scenario_name:>11} / {save_label:<9} -> {stats.frames} frames, capture_fps={capture_fps:.3f}, e2e_fps={end_to_end_fps:.3f}"
                     )
-                capture_fps = (
-                    (stats.frames / stats.capture_elapsed_s)
-                    if stats.capture_elapsed_s > 0
-                    else None
-                )
-                end_to_end_fps = (
-                    (stats.frames / stats.end_to_end_elapsed_s)
-                    if stats.end_to_end_elapsed_s > 0
-                    else None
-                )
-                results.append(
-                    ScenarioResult(
-                        name=scenario_name,
-                        save_target=save_label,
-                        frames=stats.frames,
-                        capture_elapsed_s=stats.capture_elapsed_s,
-                        end_to_end_elapsed_s=stats.end_to_end_elapsed_s,
-                        capture_fps=capture_fps,
-                        end_to_end_fps=end_to_end_fps,
-                        ok=True,
+                    time.sleep(0.3)
+                except Exception as exc:
+                    results.append(
+                        ScenarioResult(
+                            name=scenario_name,
+                            save_target=save_label,
+                            frames=0,
+                            capture_elapsed_s=None,
+                            end_to_end_elapsed_s=None,
+                            capture_fps=None,
+                            end_to_end_fps=None,
+                            ok=False,
+                            detail=str(exc),
+                        )
                     )
-                )
-                print(
-                    f"Completed {scenario_name:>11} / {save_label:<9} -> {stats.frames} frames, capture_fps={capture_fps:.3f}, e2e_fps={end_to_end_fps:.3f}"
-                )
-                time.sleep(0.3)
+                    print(f"Failed    {scenario_name:>11} / {save_label:<9}: {exc}")
+        finally:
+            try:
+                restored = restore_image_quality_cr3(controller)
+                print(f"Restored capture format to CR3-compatible mode: {restored}")
             except Exception as exc:
-                results.append(
-                    ScenarioResult(
-                        name=scenario_name,
-                        save_target=save_label,
-                        frames=0,
-                        capture_elapsed_s=None,
-                        end_to_end_elapsed_s=None,
-                        capture_fps=None,
-                        end_to_end_fps=None,
-                        ok=False,
-                        detail=str(exc),
-                    )
-                )
-                print(f"Failed    {scenario_name:>11} / {save_label:<9}: {exc}")
+                print(f"Warning: failed to restore CR3-compatible image quality: {exc}")
 
     print_results(results, run_seconds=args.run_seconds)
     failures = sum(1 for r in results if not r.ok)
