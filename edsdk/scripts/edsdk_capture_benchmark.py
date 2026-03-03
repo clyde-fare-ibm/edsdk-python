@@ -115,7 +115,7 @@ class ObjectEventCounter:
 
 
 def wait_for_event_quiet(
-    counter: ObjectEventCounter, quiet_s: float = 0.4, max_wait_s: float = 5.0
+    counter: ObjectEventCounter, quiet_s: float = 1.2, max_wait_s: float = 20.0
 ) -> int:
     """Wait until DirItemCreated count is stable for quiet_s."""
     deadline = time.perf_counter() + max_wait_s
@@ -125,6 +125,37 @@ def wait_for_event_quiet(
         time.sleep(0.03)
         now = time.perf_counter()
         current = counter.snapshot()
+        if current != last_count:
+            last_count = current
+            last_change = now
+        if now - last_change >= quiet_s:
+            return current
+        if now >= deadline:
+            return current
+
+
+def count_files_recursive(path: str) -> int:
+    p = Path(path)
+    if not p.exists():
+        return 0
+    return sum(1 for entry in p.rglob("*") if entry.is_file())
+
+
+def wait_for_file_quiet(path: str, quiet_s: float, max_wait_s: float) -> int:
+    """Wait until file count in path stays stable for quiet_s."""
+    deadline = time.perf_counter() + max_wait_s
+    last_count = count_files_recursive(path)
+    last_change = time.perf_counter()
+    while True:
+        time.sleep(0.05)
+        # Keep SDK events flowing while we wait for late transfers.
+        try:
+            if hasattr(edsdk, "GetEvent"):
+                edsdk.GetEvent()
+        except Exception:
+            pass
+        now = time.perf_counter()
+        current = count_files_recursive(path)
         if current != last_count:
             last_count = current
             last_change = now
@@ -549,7 +580,7 @@ def run_camera_async_timed(
             on_retry=lambda: controller.wake_up(),
         )
     capture_elapsed = time.perf_counter() - t0
-    end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
+    end_count = wait_for_event_quiet(counter, quiet_s=1.2, max_wait_s=max(5.0, timeout_s))
     end_to_end_elapsed = time.perf_counter() - t0
     return RunStats(
         frames=max(0, end_count - start_count),
@@ -597,7 +628,7 @@ def run_camera_burst_timed(
                 int(ShutterButton.OFF),
             )
     capture_elapsed = time.perf_counter() - t0
-    end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
+    end_count = wait_for_event_quiet(counter, quiet_s=1.2, max_wait_s=max(5.0, timeout_s))
     end_to_end_elapsed = time.perf_counter() - t0
     return RunStats(
         frames=max(0, end_count - start_count),
@@ -668,6 +699,18 @@ def parse_args() -> argparse.Namespace:
         choices=("both", "host", "camera"),
         default="both",
         help="Which save targets to benchmark: both, host only, or camera SD only",
+    )
+    parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=1.2,
+        help="Quiet-window seconds used to detect late frames/transfers (default: 1.2)",
+    )
+    parser.add_argument(
+        "--max-settle-seconds",
+        type=float,
+        default=20.0,
+        help="Max extra wait for late frames/transfers before finalizing counts (default: 20)",
     )
     return parser.parse_args()
 
@@ -803,8 +846,49 @@ def main() -> int:
                 except Exception:
                     pass
                 time.sleep(0.2)
+                run_start = time.perf_counter()
+                host_before = 0
+                cam_before = 0
+                if save_to == SaveTo.Host:
+                    # Use actual files written as authoritative frame count for host runs.
+                    os.makedirs(args.save_dir, exist_ok=True)
+                    controller.save_dir = args.save_dir
+                    host_before = count_files_recursive(args.save_dir)
+                else:
+                    cam_before = event_counter.snapshot()
                 set_save_target(controller, save_to)
                 stats = runner(controller)
+                if save_to == SaveTo.Host:
+                    host_after = wait_for_file_quiet(
+                        args.save_dir,
+                        quiet_s=max(0.2, args.settle_seconds),
+                        max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                    )
+                    authoritative_frames = max(0, host_after - host_before)
+                    authoritative_e2e = time.perf_counter() - run_start
+                    stats = RunStats(
+                        frames=authoritative_frames,
+                        capture_elapsed_s=stats.capture_elapsed_s,
+                        end_to_end_elapsed_s=max(
+                            stats.end_to_end_elapsed_s, authoritative_e2e
+                        ),
+                    )
+                else:
+                    # For camera SD, use settled DirItemCreated delta as
+                    # authoritative frame count for the scenario.
+                    cam_after = wait_for_event_quiet(
+                        event_counter,
+                        quiet_s=max(0.2, args.settle_seconds),
+                        max_wait_s=max(args.settle_seconds, args.max_settle_seconds),
+                    )
+                    authoritative_frames = max(0, cam_after - cam_before)
+                    stats = RunStats(
+                        frames=authoritative_frames,
+                        capture_elapsed_s=stats.capture_elapsed_s,
+                        end_to_end_elapsed_s=max(
+                            stats.end_to_end_elapsed_s, time.perf_counter() - run_start
+                        ),
+                    )
                 capture_fps = (
                     (stats.frames / stats.capture_elapsed_s)
                     if stats.capture_elapsed_s > 0
