@@ -38,6 +38,8 @@ class ScenarioResult:
     name: str
     save_target: str
     elapsed_s: Optional[float]
+    frames: int
+    fps: Optional[float]
     ok: bool
     detail: str = ""
 
@@ -101,6 +103,26 @@ class ObjectEventCounter:
                     return False
                 self._cv.wait(timeout=remaining)
             return True
+
+
+def wait_for_event_quiet(
+    counter: ObjectEventCounter, quiet_s: float = 0.4, max_wait_s: float = 5.0
+) -> int:
+    """Wait until DirItemCreated count is stable for quiet_s."""
+    deadline = time.perf_counter() + max_wait_s
+    last_count = counter.snapshot()
+    last_change = time.perf_counter()
+    while True:
+        time.sleep(0.03)
+        now = time.perf_counter()
+        current = counter.snapshot()
+        if current != last_count:
+            last_count = current
+            last_change = now
+        if now - last_change >= quiet_s:
+            return current
+        if now >= deadline:
+            return current
 
 
 def set_save_target(controller: CameraController, save_to: SaveTo) -> None:
@@ -311,23 +333,260 @@ def run_camera_burst_blocking(
     )
 
 
+def run_host_blocking_timed(
+    controller: CameraController, run_seconds: float, timeout_s: float
+) -> Tuple[int, float]:
+    t0 = time.perf_counter()
+    deadline = t0 + run_seconds
+    frames = 0
+    while time.perf_counter() < deadline:
+        holder: List[List[str]] = []
+
+        def _shot_once() -> None:
+            holder.clear()
+            holder.append(controller.capture(shots=1, timeout=timeout_s))
+
+        run_with_busy_retry(
+            _shot_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+        if holder and holder[0]:
+            frames += len(holder[0])
+    elapsed = time.perf_counter() - t0
+    return frames, elapsed
+
+
+def run_host_async_timed(
+    controller: CameraController, run_seconds: float, timeout_s: float
+) -> Tuple[int, float]:
+    t0 = time.perf_counter()
+    deadline = t0 + run_seconds
+    first_marker: Optional[int] = None
+    expected_total = 0
+    while time.perf_counter() < deadline:
+        holder: List[dict] = []
+
+        def _trigger_once() -> None:
+            holder.clear()
+            holder.append(controller.capture_async(shots=1))
+
+        run_with_busy_retry(
+            _trigger_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+        if not holder:
+            continue
+        ticket = holder[0]
+        if first_marker is None:
+            first_marker = int(ticket["marker"])
+        expected_total += int(ticket["expected"])
+    frames = 0
+    if expected_total > 0 and first_marker is not None:
+        paths = controller.wait_for_downloads(
+            expected=expected_total,
+            marker=first_marker,
+            timeout=max(timeout_s, expected_total * 5.0),
+        )
+        frames = len(paths)
+    elapsed = time.perf_counter() - t0
+    return frames, elapsed
+
+
+def run_host_burst_async_timed(
+    controller: CameraController,
+    run_seconds: float,
+    timeout_s: float,
+    drive_mode: DriveMode,
+) -> Tuple[int, float]:
+    t0 = time.perf_counter()
+    ticket_holder: List[dict] = []
+
+    def _burst_once() -> None:
+        ticket_holder.clear()
+        ticket_holder.append(
+            controller.capture_burst_async(
+                shots=1,
+                duration=run_seconds,
+                timeout=max(timeout_s, run_seconds + 2.0),
+                drive_mode=drive_mode,
+                apply_drive_mode=True,
+            )
+        )
+
+    run_with_busy_retry(
+        _burst_once,
+        retries=6,
+        base_delay_s=0.08,
+        on_retry=lambda: controller.wake_up(),
+    )
+    ticket = ticket_holder[0]
+    paths = controller.wait_for_downloads(
+        expected=int(ticket["expected"]),
+        marker=int(ticket["marker"]),
+        timeout=max(timeout_s, run_seconds + 10.0, int(ticket["expected"]) * 5.0),
+    )
+    elapsed = time.perf_counter() - t0
+    return len(paths), elapsed
+
+
+def run_host_burst_blocking_timed(
+    controller: CameraController,
+    run_seconds: float,
+    timeout_s: float,
+    drive_mode: DriveMode,
+) -> Tuple[int, float]:
+    t0 = time.perf_counter()
+    paths_holder: List[List[str]] = []
+
+    def _burst_once() -> None:
+        paths_holder.clear()
+        paths_holder.append(
+            controller.capture_burst(
+                shots=1,
+                duration=run_seconds,
+                timeout=max(timeout_s, run_seconds + 2.0),
+                download_timeout=max(timeout_s, run_seconds + 10.0),
+                drive_mode=drive_mode,
+                apply_drive_mode=True,
+            )
+        )
+
+    run_with_busy_retry(
+        _burst_once,
+        retries=6,
+        base_delay_s=0.08,
+        on_retry=lambda: controller.wake_up(),
+    )
+    elapsed = time.perf_counter() - t0
+    return len(paths_holder[0]), elapsed
+
+
+def run_camera_blocking_timed(
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    run_seconds: float,
+    timeout_s: float,
+) -> Tuple[int, float]:
+    if controller._cam is None:
+        raise RuntimeError("Camera session not open")
+    t0 = time.perf_counter()
+    deadline = t0 + run_seconds
+    frames = 0
+    while time.perf_counter() < deadline:
+        start = counter.snapshot()
+
+        def _shot_once() -> None:
+            edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+
+        run_with_busy_retry(
+            _shot_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+        if counter.wait_for_delta(start=start, expected_delta=1, timeout_s=timeout_s):
+            frames += 1
+        else:
+            raise TimeoutError("Timed out waiting for DirItemCreated in blocking SD mode")
+    elapsed = time.perf_counter() - t0
+    return frames, elapsed
+
+
+def run_camera_async_timed(
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    run_seconds: float,
+    timeout_s: float,
+) -> Tuple[int, float]:
+    if controller._cam is None:
+        raise RuntimeError("Camera session not open")
+    t0 = time.perf_counter()
+    deadline = t0 + run_seconds
+    start_count = counter.snapshot()
+    while time.perf_counter() < deadline:
+        def _shot_once() -> None:
+            edsdk.SendCommand(controller._cam, CameraCommand.TakePicture, 0)
+
+        run_with_busy_retry(
+            _shot_once,
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+    end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
+    elapsed = time.perf_counter() - t0
+    return max(0, end_count - start_count), elapsed
+
+
+def run_camera_burst_timed(
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    run_seconds: float,
+    timeout_s: float,
+    drive_mode: DriveMode,
+) -> Tuple[int, float]:
+    if controller._cam is None:
+        raise RuntimeError("Camera session not open")
+    controller.set_properties(
+        drive_mode=drive_mode,
+        validate=False,
+        tolerate_not_supported=True,
+    )
+    start_count = counter.snapshot()
+    t0 = time.perf_counter()
+    shutter_pressed = False
+    try:
+        run_with_busy_retry(
+            lambda: edsdk.SendCommand(
+                controller._cam,
+                CameraCommand.PressShutterButton,
+                int(ShutterButton.Completely),
+            ),
+            retries=8,
+            base_delay_s=0.05,
+            on_retry=lambda: controller.wake_up(),
+        )
+        shutter_pressed = True
+        while (time.perf_counter() - t0) < run_seconds:
+            time.sleep(0.01)
+    finally:
+        if shutter_pressed:
+            edsdk.SendCommand(
+                controller._cam,
+                CameraCommand.PressShutterButton,
+                int(ShutterButton.OFF),
+            )
+    end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
+    elapsed = time.perf_counter() - t0
+    return max(0, end_count - start_count), elapsed
+
+
 def timed_run(fn: Callable[[], None]) -> float:
     t0 = time.perf_counter()
     fn()
     return time.perf_counter() - t0
 
 
-def print_results(results: List[ScenarioResult], shots: int) -> None:
+def print_results(results: List[ScenarioResult], run_seconds: float) -> None:
     print()
-    print(f"Benchmark results for {shots} successive images")
-    print("-" * 82)
-    print(f"{'Scenario':<26} {'SaveTo':<10} {'Seconds':>10}  {'Status':<8} Detail")
-    print("-" * 82)
+    print(f"Benchmark results (target run window: {run_seconds:.2f}s)")
+    print("-" * 104)
+    print(
+        f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'Elapsed(s)':>11} {'FPS':>8}  {'Status':<8} Detail"
+    )
+    print("-" * 104)
     for row in results:
         sec = f"{row.elapsed_s:.3f}" if row.elapsed_s is not None else "-"
+        fps = f"{row.fps:.3f}" if row.fps is not None else "-"
         status = "OK" if row.ok else "FAILED"
-        print(f"{row.name:<26} {row.save_target:<10} {sec:>10}  {status:<8} {row.detail}")
-    print("-" * 82)
+        print(
+            f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {sec:>11} {fps:>8}  {status:<8} {row.detail}"
+        )
+    print("-" * 104)
 
 
 def parse_args() -> argparse.Namespace:
@@ -341,10 +600,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory for host-download scenarios",
     )
     parser.add_argument(
-        "--shots",
-        type=int,
-        default=6,
-        help="Number of successive images per scenario (default: 6)",
+        "--run-seconds",
+        type=float,
+        default=3.0,
+        help="How long to run each scenario at maximum throughput (default: 3.0)",
     )
     parser.add_argument(
         "--timeout",
@@ -373,62 +632,68 @@ def main() -> int:
     results: List[ScenarioResult] = []
     event_counter = ObjectEventCounter()
 
-    scenarios: List[Tuple[str, SaveTo, Callable[[CameraController], None]]] = [
+    scenarios: List[
+        Tuple[str, SaveTo, Callable[[CameraController], Tuple[int, float]]]
+    ] = [
         (
             "blocking",
             SaveTo.Host,
-            lambda c: run_host_blocking(c, args.shots, args.timeout),
+            lambda c: run_host_blocking_timed(c, args.run_seconds, args.timeout),
         ),
         (
             "async",
             SaveTo.Host,
-            lambda c: run_host_async(c, args.shots, args.timeout),
+            lambda c: run_host_async_timed(c, args.run_seconds, args.timeout),
         ),
         (
             "burst_async_high",
             SaveTo.Host,
-            lambda c: run_host_burst_async(
-                c, args.shots, args.timeout, DriveMode.HighSpeedContinuous
+            lambda c: run_host_burst_async_timed(
+                c, args.run_seconds, args.timeout, DriveMode.HighSpeedContinuous
             ),
         ),
         (
             "burst_async_low",
             SaveTo.Host,
-            lambda c: run_host_burst_async(
-                c, args.shots, args.timeout, DriveMode.LowSpeedContinuous
+            lambda c: run_host_burst_async_timed(
+                c, args.run_seconds, args.timeout, DriveMode.LowSpeedContinuous
             ),
         ),
         (
             "burst_high",
             SaveTo.Host,
-            lambda c: run_host_burst_blocking(
-                c, args.shots, args.timeout, DriveMode.HighSpeedContinuous
+            lambda c: run_host_burst_blocking_timed(
+                c, args.run_seconds, args.timeout, DriveMode.HighSpeedContinuous
             ),
         ),
         (
             "burst_low",
             SaveTo.Host,
-            lambda c: run_host_burst_blocking(
-                c, args.shots, args.timeout, DriveMode.LowSpeedContinuous
+            lambda c: run_host_burst_blocking_timed(
+                c, args.run_seconds, args.timeout, DriveMode.LowSpeedContinuous
             ),
         ),
         (
             "blocking",
             SaveTo.Camera,
-            lambda c: run_camera_blocking(c, event_counter, args.shots, args.timeout),
+            lambda c: run_camera_blocking_timed(
+                c, event_counter, args.run_seconds, args.timeout
+            ),
         ),
         (
             "async",
             SaveTo.Camera,
-            lambda c: run_camera_async(c, event_counter, args.shots, args.timeout),
+            lambda c: run_camera_async_timed(
+                c, event_counter, args.run_seconds, args.timeout
+            ),
         ),
         (
             "burst_async_high",
             SaveTo.Camera,
-            lambda c: run_camera_burst_async(
+            lambda c: run_camera_burst_timed(
                 c,
                 event_counter,
-                args.shots,
+                args.run_seconds,
                 args.timeout,
                 DriveMode.HighSpeedContinuous,
             ),
@@ -436,10 +701,10 @@ def main() -> int:
         (
             "burst_async_low",
             SaveTo.Camera,
-            lambda c: run_camera_burst_async(
+            lambda c: run_camera_burst_timed(
                 c,
                 event_counter,
-                args.shots,
+                args.run_seconds,
                 args.timeout,
                 DriveMode.LowSpeedContinuous,
             ),
@@ -447,10 +712,10 @@ def main() -> int:
         (
             "burst_high",
             SaveTo.Camera,
-            lambda c: run_camera_burst_blocking(
+            lambda c: run_camera_burst_timed(
                 c,
                 event_counter,
-                args.shots,
+                args.run_seconds,
                 args.timeout,
                 DriveMode.HighSpeedContinuous,
             ),
@@ -458,10 +723,10 @@ def main() -> int:
         (
             "burst_low",
             SaveTo.Camera,
-            lambda c: run_camera_burst_blocking(
+            lambda c: run_camera_burst_timed(
                 c,
                 event_counter,
-                args.shots,
+                args.run_seconds,
                 args.timeout,
                 DriveMode.LowSpeedContinuous,
             ),
@@ -492,17 +757,20 @@ def main() -> int:
                     pass
                 time.sleep(0.2)
                 set_save_target(controller, save_to)
-                elapsed = timed_run(lambda: runner(controller))
+                frames, elapsed = runner(controller)
+                fps = (frames / elapsed) if elapsed > 0 else None
                 results.append(
                     ScenarioResult(
                         name=scenario_name,
                         save_target=save_label,
                         elapsed_s=elapsed,
+                        frames=frames,
+                        fps=fps,
                         ok=True,
                     )
                 )
                 print(
-                    f"Completed {scenario_name:>11} / {save_label:<9} in {elapsed:.3f}s"
+                    f"Completed {scenario_name:>11} / {save_label:<9} -> {frames} frames in {elapsed:.3f}s ({fps:.3f} fps)"
                 )
                 time.sleep(0.3)
             except Exception as exc:
@@ -511,13 +779,15 @@ def main() -> int:
                         name=scenario_name,
                         save_target=save_label,
                         elapsed_s=None,
+                        frames=0,
+                        fps=None,
                         ok=False,
                         detail=str(exc),
                     )
                 )
                 print(f"Failed    {scenario_name:>11} / {save_label:<9}: {exc}")
 
-    print_results(results, shots=args.shots)
+    print_results(results, run_seconds=args.run_seconds)
     failures = sum(1 for r in results if not r.ok)
     return 1 if failures else 0
 
