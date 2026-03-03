@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Benchmark EDSDK capture paths across host vs camera storage.
 
-Runs 6 scenarios:
-1) blocking capture -> host download
-2) async capture    -> host download
-3) burst async      -> host download
-4) blocking capture -> camera SD
-5) async capture    -> camera SD
-6) burst async      -> camera SD
+Runs a scenario matrix including:
+- blocking
+- async
+- burst (non-async) with HighSpeedContinuous and LowSpeedContinuous
+- burst_async with HighSpeedContinuous and LowSpeedContinuous
+for both host and camera SD save targets.
 """
 
 from __future__ import annotations
@@ -152,7 +151,9 @@ def run_host_async(controller: CameraController, shots: int, timeout_s: float) -
         raise RuntimeError(f"Expected {shots} downloads, got {len(paths)}")
 
 
-def run_host_burst_async(controller: CameraController, shots: int, timeout_s: float) -> None:
+def run_host_burst_async(
+    controller: CameraController, shots: int, timeout_s: float, drive_mode: DriveMode
+) -> None:
     ticket_holder: List[dict] = []
 
     def _burst_once() -> None:
@@ -161,7 +162,7 @@ def run_host_burst_async(controller: CameraController, shots: int, timeout_s: fl
             controller.capture_burst_async(
                 shots=shots,
                 timeout=max(timeout_s, shots * 2.0),
-                drive_mode=DriveMode.HighSpeedContinuous,
+                drive_mode=drive_mode,
                 apply_drive_mode=True,
             )
         )
@@ -182,6 +183,34 @@ def run_host_burst_async(controller: CameraController, shots: int, timeout_s: fl
         raise RuntimeError(
             f"Expected at least {shots} downloads during burst, got {len(paths)}"
         )
+
+
+def run_host_burst_blocking(
+    controller: CameraController, shots: int, timeout_s: float, drive_mode: DriveMode
+) -> None:
+    paths_holder: List[List[str]] = []
+
+    def _burst_once() -> None:
+        paths_holder.clear()
+        paths_holder.append(
+            controller.capture_burst(
+                shots=shots,
+                timeout=max(timeout_s, shots * 2.0),
+                download_timeout=max(timeout_s, shots * 5.0),
+                drive_mode=drive_mode,
+                apply_drive_mode=True,
+            )
+        )
+
+    run_with_busy_retry(
+        _burst_once,
+        retries=6,
+        base_delay_s=0.08,
+        on_retry=lambda: controller.wake_up(),
+    )
+    paths = paths_holder[0]
+    if len(paths) < shots:
+        raise RuntimeError(f"Expected at least {shots} downloads during burst, got {len(paths)}")
 
 
 def run_camera_blocking(
@@ -226,12 +255,16 @@ def run_camera_async(
 
 
 def run_camera_burst_async(
-    controller: CameraController, counter: ObjectEventCounter, shots: int, timeout_s: float
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    shots: int,
+    timeout_s: float,
+    drive_mode: DriveMode,
 ) -> None:
     if controller._cam is None:
         raise RuntimeError("Camera session not open")
     controller.set_properties(
-        drive_mode=DriveMode.HighSpeedContinuous,
+        drive_mode=drive_mode,
         validate=False,
         tolerate_not_supported=True,
     )
@@ -258,6 +291,24 @@ def run_camera_burst_async(
                 CameraCommand.PressShutterButton,
                 int(ShutterButton.OFF),
             )
+
+
+def run_camera_burst_blocking(
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    shots: int,
+    timeout_s: float,
+    drive_mode: DriveMode,
+) -> None:
+    # There is no dedicated burst-blocking API for SaveTo.Camera without downloads,
+    # so this uses the same shutter/event strategy and blocks until `shots` events.
+    run_camera_burst_async(
+        controller=controller,
+        counter=counter,
+        shots=shots,
+        timeout_s=timeout_s,
+        drive_mode=drive_mode,
+    )
 
 
 def timed_run(fn: Callable[[], None]) -> float:
@@ -306,6 +357,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging from CameraController",
     )
+    parser.add_argument(
+        "--save-targets",
+        choices=("both", "host", "camera"),
+        default="both",
+        help="Which save targets to benchmark: both, host only, or camera SD only",
+    )
     return parser.parse_args()
 
 
@@ -328,9 +385,32 @@ def main() -> int:
             lambda c: run_host_async(c, args.shots, args.timeout),
         ),
         (
-            "burst_async",
+            "burst_async_high",
             SaveTo.Host,
-            lambda c: run_host_burst_async(c, args.shots, args.timeout),
+            lambda c: run_host_burst_async(
+                c, args.shots, args.timeout, DriveMode.HighSpeedContinuous
+            ),
+        ),
+        (
+            "burst_async_low",
+            SaveTo.Host,
+            lambda c: run_host_burst_async(
+                c, args.shots, args.timeout, DriveMode.LowSpeedContinuous
+            ),
+        ),
+        (
+            "burst_high",
+            SaveTo.Host,
+            lambda c: run_host_burst_blocking(
+                c, args.shots, args.timeout, DriveMode.HighSpeedContinuous
+            ),
+        ),
+        (
+            "burst_low",
+            SaveTo.Host,
+            lambda c: run_host_burst_blocking(
+                c, args.shots, args.timeout, DriveMode.LowSpeedContinuous
+            ),
         ),
         (
             "blocking",
@@ -343,11 +423,54 @@ def main() -> int:
             lambda c: run_camera_async(c, event_counter, args.shots, args.timeout),
         ),
         (
-            "burst_async",
+            "burst_async_high",
             SaveTo.Camera,
-            lambda c: run_camera_burst_async(c, event_counter, args.shots, args.timeout),
+            lambda c: run_camera_burst_async(
+                c,
+                event_counter,
+                args.shots,
+                args.timeout,
+                DriveMode.HighSpeedContinuous,
+            ),
+        ),
+        (
+            "burst_async_low",
+            SaveTo.Camera,
+            lambda c: run_camera_burst_async(
+                c,
+                event_counter,
+                args.shots,
+                args.timeout,
+                DriveMode.LowSpeedContinuous,
+            ),
+        ),
+        (
+            "burst_high",
+            SaveTo.Camera,
+            lambda c: run_camera_burst_blocking(
+                c,
+                event_counter,
+                args.shots,
+                args.timeout,
+                DriveMode.HighSpeedContinuous,
+            ),
+        ),
+        (
+            "burst_low",
+            SaveTo.Camera,
+            lambda c: run_camera_burst_blocking(
+                c,
+                event_counter,
+                args.shots,
+                args.timeout,
+                DriveMode.LowSpeedContinuous,
+            ),
         ),
     ]
+    if args.save_targets == "host":
+        scenarios = [s for s in scenarios if s[1] == SaveTo.Host]
+    elif args.save_targets == "camera":
+        scenarios = [s for s in scenarios if s[1] == SaveTo.Camera]
 
     with CameraController(
         index=args.index,
