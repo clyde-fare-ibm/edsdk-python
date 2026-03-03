@@ -37,11 +37,20 @@ from edsdk.constants.properties import DriveMode, PropID, SaveTo  # noqa: E402
 class ScenarioResult:
     name: str
     save_target: str
-    elapsed_s: Optional[float]
     frames: int
-    fps: Optional[float]
+    capture_elapsed_s: Optional[float]
+    end_to_end_elapsed_s: Optional[float]
+    capture_fps: Optional[float]
+    end_to_end_fps: Optional[float]
     ok: bool
     detail: str = ""
+
+
+@dataclass
+class RunStats:
+    frames: int
+    capture_elapsed_s: float
+    end_to_end_elapsed_s: float
 
 
 def is_device_busy(exc: Exception) -> bool:
@@ -335,7 +344,7 @@ def run_camera_burst_blocking(
 
 def run_host_blocking_timed(
     controller: CameraController, run_seconds: float, timeout_s: float
-) -> Tuple[int, float]:
+) -> RunStats:
     t0 = time.perf_counter()
     deadline = t0 + run_seconds
     frames = 0
@@ -355,12 +364,16 @@ def run_host_blocking_timed(
         if holder and holder[0]:
             frames += len(holder[0])
     elapsed = time.perf_counter() - t0
-    return frames, elapsed
+    return RunStats(
+        frames=frames,
+        capture_elapsed_s=elapsed,
+        end_to_end_elapsed_s=elapsed,
+    )
 
 
 def run_host_async_timed(
     controller: CameraController, run_seconds: float, timeout_s: float
-) -> Tuple[int, float]:
+) -> RunStats:
     t0 = time.perf_counter()
     deadline = t0 + run_seconds
     first_marker: Optional[int] = None
@@ -384,6 +397,7 @@ def run_host_async_timed(
         if first_marker is None:
             first_marker = int(ticket["marker"])
         expected_total += int(ticket["expected"])
+    capture_elapsed = time.perf_counter() - t0
     frames = 0
     if expected_total > 0 and first_marker is not None:
         paths = controller.wait_for_downloads(
@@ -392,8 +406,12 @@ def run_host_async_timed(
             timeout=max(timeout_s, expected_total * 5.0),
         )
         frames = len(paths)
-    elapsed = time.perf_counter() - t0
-    return frames, elapsed
+    end_to_end_elapsed = time.perf_counter() - t0
+    return RunStats(
+        frames=frames,
+        capture_elapsed_s=capture_elapsed,
+        end_to_end_elapsed_s=end_to_end_elapsed,
+    )
 
 
 def run_host_burst_async_timed(
@@ -401,7 +419,7 @@ def run_host_burst_async_timed(
     run_seconds: float,
     timeout_s: float,
     drive_mode: DriveMode,
-) -> Tuple[int, float]:
+) -> RunStats:
     t0 = time.perf_counter()
     ticket_holder: List[dict] = []
 
@@ -424,13 +442,18 @@ def run_host_burst_async_timed(
         on_retry=lambda: controller.wake_up(),
     )
     ticket = ticket_holder[0]
+    capture_elapsed = time.perf_counter() - t0
     paths = controller.wait_for_downloads(
         expected=int(ticket["expected"]),
         marker=int(ticket["marker"]),
         timeout=max(timeout_s, run_seconds + 10.0, int(ticket["expected"]) * 5.0),
     )
-    elapsed = time.perf_counter() - t0
-    return len(paths), elapsed
+    end_to_end_elapsed = time.perf_counter() - t0
+    return RunStats(
+        frames=len(paths),
+        capture_elapsed_s=capture_elapsed,
+        end_to_end_elapsed_s=end_to_end_elapsed,
+    )
 
 
 def run_host_burst_blocking_timed(
@@ -438,7 +461,7 @@ def run_host_burst_blocking_timed(
     run_seconds: float,
     timeout_s: float,
     drive_mode: DriveMode,
-) -> Tuple[int, float]:
+) -> RunStats:
     t0 = time.perf_counter()
     paths_holder: List[List[str]] = []
 
@@ -462,7 +485,11 @@ def run_host_burst_blocking_timed(
         on_retry=lambda: controller.wake_up(),
     )
     elapsed = time.perf_counter() - t0
-    return len(paths_holder[0]), elapsed
+    return RunStats(
+        frames=len(paths_holder[0]),
+        capture_elapsed_s=elapsed,
+        end_to_end_elapsed_s=elapsed,
+    )
 
 
 def run_camera_blocking_timed(
@@ -470,7 +497,7 @@ def run_camera_blocking_timed(
     counter: ObjectEventCounter,
     run_seconds: float,
     timeout_s: float,
-) -> Tuple[int, float]:
+) -> RunStats:
     if controller._cam is None:
         raise RuntimeError("Camera session not open")
     t0 = time.perf_counter()
@@ -493,7 +520,11 @@ def run_camera_blocking_timed(
         else:
             raise TimeoutError("Timed out waiting for DirItemCreated in blocking SD mode")
     elapsed = time.perf_counter() - t0
-    return frames, elapsed
+    return RunStats(
+        frames=frames,
+        capture_elapsed_s=elapsed,
+        end_to_end_elapsed_s=elapsed,
+    )
 
 
 def run_camera_async_timed(
@@ -501,7 +532,7 @@ def run_camera_async_timed(
     counter: ObjectEventCounter,
     run_seconds: float,
     timeout_s: float,
-) -> Tuple[int, float]:
+) -> RunStats:
     if controller._cam is None:
         raise RuntimeError("Camera session not open")
     t0 = time.perf_counter()
@@ -517,9 +548,14 @@ def run_camera_async_timed(
             base_delay_s=0.05,
             on_retry=lambda: controller.wake_up(),
         )
+    capture_elapsed = time.perf_counter() - t0
     end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
-    elapsed = time.perf_counter() - t0
-    return max(0, end_count - start_count), elapsed
+    end_to_end_elapsed = time.perf_counter() - t0
+    return RunStats(
+        frames=max(0, end_count - start_count),
+        capture_elapsed_s=capture_elapsed,
+        end_to_end_elapsed_s=end_to_end_elapsed,
+    )
 
 
 def run_camera_burst_timed(
@@ -528,7 +564,7 @@ def run_camera_burst_timed(
     run_seconds: float,
     timeout_s: float,
     drive_mode: DriveMode,
-) -> Tuple[int, float]:
+) -> RunStats:
     if controller._cam is None:
         raise RuntimeError("Camera session not open")
     controller.set_properties(
@@ -560,9 +596,14 @@ def run_camera_burst_timed(
                 CameraCommand.PressShutterButton,
                 int(ShutterButton.OFF),
             )
+    capture_elapsed = time.perf_counter() - t0
     end_count = wait_for_event_quiet(counter, quiet_s=0.4, max_wait_s=max(1.0, timeout_s))
-    elapsed = time.perf_counter() - t0
-    return max(0, end_count - start_count), elapsed
+    end_to_end_elapsed = time.perf_counter() - t0
+    return RunStats(
+        frames=max(0, end_count - start_count),
+        capture_elapsed_s=capture_elapsed,
+        end_to_end_elapsed_s=end_to_end_elapsed,
+    )
 
 
 def timed_run(fn: Callable[[], None]) -> float:
@@ -574,19 +615,25 @@ def timed_run(fn: Callable[[], None]) -> float:
 def print_results(results: List[ScenarioResult], run_seconds: float) -> None:
     print()
     print(f"Benchmark results (target run window: {run_seconds:.2f}s)")
-    print("-" * 104)
+    print("-" * 138)
     print(
-        f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'Elapsed(s)':>11} {'FPS':>8}  {'Status':<8} Detail"
+        f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'Capture(s)':>11} {'E2E(s)':>10} {'CaptureFPS':>11} {'E2EFPS':>9}  {'Status':<8} Detail"
     )
-    print("-" * 104)
+    print("-" * 138)
     for row in results:
-        sec = f"{row.elapsed_s:.3f}" if row.elapsed_s is not None else "-"
-        fps = f"{row.fps:.3f}" if row.fps is not None else "-"
+        cap_s = f"{row.capture_elapsed_s:.3f}" if row.capture_elapsed_s is not None else "-"
+        e2e_s = (
+            f"{row.end_to_end_elapsed_s:.3f}"
+            if row.end_to_end_elapsed_s is not None
+            else "-"
+        )
+        cap_fps = f"{row.capture_fps:.3f}" if row.capture_fps is not None else "-"
+        e2e_fps = f"{row.end_to_end_fps:.3f}" if row.end_to_end_fps is not None else "-"
         status = "OK" if row.ok else "FAILED"
         print(
-            f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {sec:>11} {fps:>8}  {status:<8} {row.detail}"
+            f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {cap_s:>11} {e2e_s:>10} {cap_fps:>11} {e2e_fps:>9}  {status:<8} {row.detail}"
         )
-    print("-" * 104)
+    print("-" * 138)
 
 
 def parse_args() -> argparse.Namespace:
@@ -633,7 +680,7 @@ def main() -> int:
     event_counter = ObjectEventCounter()
 
     scenarios: List[
-        Tuple[str, SaveTo, Callable[[CameraController], Tuple[int, float]]]
+        Tuple[str, SaveTo, Callable[[CameraController], RunStats]]
     ] = [
         (
             "blocking",
@@ -757,20 +804,31 @@ def main() -> int:
                     pass
                 time.sleep(0.2)
                 set_save_target(controller, save_to)
-                frames, elapsed = runner(controller)
-                fps = (frames / elapsed) if elapsed > 0 else None
+                stats = runner(controller)
+                capture_fps = (
+                    (stats.frames / stats.capture_elapsed_s)
+                    if stats.capture_elapsed_s > 0
+                    else None
+                )
+                end_to_end_fps = (
+                    (stats.frames / stats.end_to_end_elapsed_s)
+                    if stats.end_to_end_elapsed_s > 0
+                    else None
+                )
                 results.append(
                     ScenarioResult(
                         name=scenario_name,
                         save_target=save_label,
-                        elapsed_s=elapsed,
-                        frames=frames,
-                        fps=fps,
+                        frames=stats.frames,
+                        capture_elapsed_s=stats.capture_elapsed_s,
+                        end_to_end_elapsed_s=stats.end_to_end_elapsed_s,
+                        capture_fps=capture_fps,
+                        end_to_end_fps=end_to_end_fps,
                         ok=True,
                     )
                 )
                 print(
-                    f"Completed {scenario_name:>11} / {save_label:<9} -> {frames} frames in {elapsed:.3f}s ({fps:.3f} fps)"
+                    f"Completed {scenario_name:>11} / {save_label:<9} -> {stats.frames} frames, capture_fps={capture_fps:.3f}, e2e_fps={end_to_end_fps:.3f}"
                 )
                 time.sleep(0.3)
             except Exception as exc:
@@ -778,9 +836,11 @@ def main() -> int:
                     ScenarioResult(
                         name=scenario_name,
                         save_target=save_label,
-                        elapsed_s=None,
                         frames=0,
-                        fps=None,
+                        capture_elapsed_s=None,
+                        end_to_end_elapsed_s=None,
+                        capture_fps=None,
+                        end_to_end_fps=None,
                         ok=False,
                         detail=str(exc),
                     )
