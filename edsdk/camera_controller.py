@@ -794,7 +794,7 @@ class CameraController:
         timeout: float = 5.0,
         *,
         duration: Optional[float] = None,
-        drive_mode: Union[str, int] = DriveMode.HighSpeedContinuous,
+        drive_mode: Union[str, int] = DriveMode.LowSpeedContinuous,
         apply_drive_mode: bool = True,
         poll_interval: float = 0.005,
     ) -> Dict[str, int]:
@@ -883,7 +883,7 @@ class CameraController:
         *,
         duration: Optional[float] = None,
         download_timeout: Optional[float] = None,
-        drive_mode: Union[str, int] = DriveMode.HighSpeedContinuous,
+        drive_mode: Union[str, int] = DriveMode.LowSpeedContinuous,
         apply_drive_mode: bool = True,
         poll_interval: float = 0.005,
     ) -> List[str]:
