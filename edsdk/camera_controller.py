@@ -873,7 +873,27 @@ class CameraController:
                 )
             except Exception:
                 pass
-        expected = (queued_now - queued_before) if duration is not None else target
+        if duration is not None:
+            # After releasing the shutter, transfer events can still be queued for a short
+            # period while the camera drains its internal burst buffer. Wait for queue
+            # growth to go quiet before finalizing the expected download count.
+            final_queued = queued_now
+            settle_quiet_period = max(0.1, poll_interval * 4.0)
+            settle_timeout = max(0.5, min(3.0, float(timeout)))
+            settle_deadline = time.time() + settle_timeout
+            last_queue_change = time.time()
+            while time.time() < settle_deadline:
+                _pump_messages_once()
+                latest_queued, _inflight = self._transfers.burst_progress()
+                if latest_queued > final_queued:
+                    final_queued = latest_queued
+                    last_queue_change = time.time()
+                elif (time.time() - last_queue_change) >= settle_quiet_period:
+                    break
+                time.sleep(max(0.001, poll_interval))
+            expected = max(0, final_queued - queued_before)
+        else:
+            expected = target
         return {"marker": marker, "expected": max(0, expected)}
 
     def capture_burst(
