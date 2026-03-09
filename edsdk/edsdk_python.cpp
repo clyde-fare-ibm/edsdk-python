@@ -563,7 +563,7 @@ static PyObject* PyEds_GetPropertyData(PyObject *Py_UNUSED(self), PyObject *args
                 static_cast<int>(t->hour),
                 static_cast<int>(t->minute),
                 static_cast<int>(t->second),
-                static_cast<int>(t->milliseconds)*1000);
+                static_cast<int>(t->milliseconds));
             break;
         }
         case kEdsDataType_ByteBlock: {
