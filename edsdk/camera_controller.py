@@ -878,7 +878,7 @@ class CameraController:
             # period while the camera drains its internal burst buffer. Wait for queue
             # growth to go quiet before finalizing the expected download count.
             final_queued = queued_now
-            settle_quiet_period = max(0.1, poll_interval * 4.0)
+            settle_quiet_period = max(0.5, poll_interval * 4.0)
             settle_timeout = max(0.5, min(3.0, float(timeout)))
             settle_deadline = time.time() + settle_timeout
             last_queue_change = time.time()
