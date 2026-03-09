@@ -722,6 +722,11 @@ class CameraController:
         edsdk.SendStatusCommand(self._cam, CameraStatusCommand.UIUnLock, 0)
         self.ui_locked = False
 
+    def get_time(self) -> float:
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        return edsdk.GetPropertyData(self._cam, PropID.DateTime, 0)
+        
     # ---------- Capture ----------
     def capture(
         self,
