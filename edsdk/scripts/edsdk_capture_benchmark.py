@@ -27,7 +27,7 @@ if str(EDSDK_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(EDSDK_PYTHON_DIR))
 
 import edsdk  # noqa: E402
-from edsdk.camera_controller import CameraController  # noqa: E402
+from edsdk.camera_controller import CameraController, RateControlledResult  # noqa: E402
 from edsdk.constants.commands import CameraCommand, ShutterButton  # noqa: E402
 from edsdk.constants.generic import ObjectEvent  # noqa: E402
 from edsdk.constants.properties import (  # noqa: E402
@@ -49,6 +49,13 @@ class ScenarioResult:
     end_to_end_fps: Optional[float]
     ok: bool
     detail: str = ""
+    # Rate-controlled extras (None for non-rate scenarios)
+    target_fps: Optional[float] = None
+    achieved_fps: Optional[float] = None
+    mean_interval: Optional[float] = None
+    jitter_std: Optional[float] = None
+    mean_schedule_error: Optional[float] = None
+    skipped: Optional[int] = None
 
 
 @dataclass
@@ -419,6 +426,76 @@ def run_camera_burst_blocking(
     )
 
 
+def run_rate_controlled(
+    controller: CameraController,
+    target_fps: float,
+    duration: float,
+) -> Tuple[RunStats, RateControlledResult]:
+    """Run rate-controlled capture and return RunStats + detailed result."""
+    result = controller.capture_rate_controlled(
+        target_fps=target_fps,
+        duration=duration,
+    )
+    stats = RunStats(
+        frames=result.total_accepted,
+        capture_elapsed_s=result.elapsed,
+        end_to_end_elapsed_s=result.elapsed,
+    )
+    return stats, result
+
+
+def run_rate_controlled_host(
+    controller: CameraController,
+    target_fps: float,
+    duration: float,
+    timeout_s: float,
+) -> Tuple[RunStats, RateControlledResult]:
+    """Rate-controlled to host -- triggers by clock, then waits for downloads."""
+    result = controller.capture_rate_controlled(
+        target_fps=target_fps,
+        duration=duration,
+    )
+    if result.total_accepted > 0:
+        controller.wait_for_downloads(
+            expected=result.total_accepted,
+            timeout=max(timeout_s, result.total_accepted * 5.0),
+        )
+    stats = RunStats(
+        frames=result.total_accepted,
+        capture_elapsed_s=result.elapsed,
+        end_to_end_elapsed_s=result.elapsed,
+    )
+    return stats, result
+
+
+def run_rate_controlled_camera(
+    controller: CameraController,
+    counter: ObjectEventCounter,
+    target_fps: float,
+    duration: float,
+    timeout_s: float,
+) -> Tuple[RunStats, RateControlledResult]:
+    """Rate-controlled to camera SD -- triggers by clock, verifies via events."""
+    start_count = counter.snapshot()
+    result = controller.capture_rate_controlled(
+        target_fps=target_fps,
+        duration=duration,
+    )
+    if result.total_accepted > 0:
+        counter.wait_for_delta(
+            start=start_count,
+            expected_delta=result.total_accepted,
+            timeout_s=max(timeout_s, result.total_accepted * 3.0),
+        )
+    confirmed = counter.snapshot() - start_count
+    stats = RunStats(
+        frames=confirmed,
+        capture_elapsed_s=result.elapsed,
+        end_to_end_elapsed_s=result.elapsed,
+    )
+    return stats, result
+
+
 def run_host_blocking_timed(
     controller: CameraController, run_seconds: float, timeout_s: float
 ) -> RunStats:
@@ -690,27 +767,54 @@ def timed_run(fn: Callable[[], None]) -> float:
 
 
 def print_results(results: List[ScenarioResult], run_seconds: float) -> None:
-    print()
-    print(f"Benchmark results (target run window: {run_seconds:.2f}s)")
-    print("-" * 138)
-    print(
-        f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'Capture(s)':>11} {'E2E(s)':>10} {'CaptureFPS':>11} {'E2EFPS':>9}  {'Status':<8} Detail"
-    )
-    print("-" * 138)
-    for row in results:
-        cap_s = f"{row.capture_elapsed_s:.3f}" if row.capture_elapsed_s is not None else "-"
-        e2e_s = (
-            f"{row.end_to_end_elapsed_s:.3f}"
-            if row.end_to_end_elapsed_s is not None
-            else "-"
-        )
-        cap_fps = f"{row.capture_fps:.3f}" if row.capture_fps is not None else "-"
-        e2e_fps = f"{row.end_to_end_fps:.3f}" if row.end_to_end_fps is not None else "-"
-        status = "OK" if row.ok else "FAILED"
+    regular = [r for r in results if r.target_fps is None]
+    rate_rows = [r for r in results if r.target_fps is not None]
+
+    if regular:
+        print()
+        print(f"Benchmark results (target run window: {run_seconds:.2f}s)")
+        print("-" * 138)
         print(
-            f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {cap_s:>11} {e2e_s:>10} {cap_fps:>11} {e2e_fps:>9}  {status:<8} {row.detail}"
+            f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'Capture(s)':>11} {'E2E(s)':>10} {'CaptureFPS':>11} {'E2EFPS':>9}  {'Status':<8} Detail"
         )
-    print("-" * 138)
+        print("-" * 138)
+        for row in regular:
+            cap_s = f"{row.capture_elapsed_s:.3f}" if row.capture_elapsed_s is not None else "-"
+            e2e_s = (
+                f"{row.end_to_end_elapsed_s:.3f}"
+                if row.end_to_end_elapsed_s is not None
+                else "-"
+            )
+            cap_fps = f"{row.capture_fps:.3f}" if row.capture_fps is not None else "-"
+            e2e_fps = f"{row.end_to_end_fps:.3f}" if row.end_to_end_fps is not None else "-"
+            status = "OK" if row.ok else "FAILED"
+            print(
+                f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {cap_s:>11} {e2e_s:>10} {cap_fps:>11} {e2e_fps:>9}  {status:<8} {row.detail}"
+            )
+        print("-" * 138)
+
+    if rate_rows:
+        print()
+        print("Rate-controlled results")
+        print("-" * 150)
+        print(
+            f"{'Scenario':<26} {'SaveTo':<10} {'Frames':>8} {'TgtFPS':>8} {'AchFPS':>8} "
+            f"{'MeanInt':>9} {'Jitter':>9} {'SchedErr':>10} {'Skip':>6}  {'Status':<8} Detail"
+        )
+        print("-" * 150)
+        for row in rate_rows:
+            ach = f"{row.achieved_fps:.3f}" if row.achieved_fps is not None else "-"
+            tgt = f"{row.target_fps:.3f}" if row.target_fps is not None else "-"
+            mi = f"{row.mean_interval:.4f}" if row.mean_interval is not None else "-"
+            jt = f"{row.jitter_std:.4f}" if row.jitter_std is not None else "-"
+            se = f"{row.mean_schedule_error:.4f}" if row.mean_schedule_error is not None else "-"
+            sk = f"{row.skipped}" if row.skipped is not None else "-"
+            status = "OK" if row.ok else "FAILED"
+            print(
+                f"{row.name:<26} {row.save_target:<10} {row.frames:>8} {tgt:>8} {ach:>8} "
+                f"{mi:>9} {jt:>9} {se:>10} {sk:>6}  {status:<8} {row.detail}"
+            )
+        print("-" * 150)
 
 
 def configure_capture_format(controller: CameraController, capture_format: str) -> str:
@@ -773,6 +877,20 @@ def parse_args() -> argparse.Namespace:
         choices=("current", "low_jpeg"),
         default="current",
         help="Capture encoding for benchmark: keep current camera format or force low-quality JPEG",
+    )
+    parser.add_argument(
+        "--rate-fps",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Target FPS values for rate-controlled scenarios (e.g. --rate-fps 0.5 1.0 1.5). "
+        "Omit to skip rate-controlled scenarios.",
+    )
+    parser.add_argument(
+        "--rate-duration",
+        type=float,
+        default=10.0,
+        help="Duration in seconds for each rate-controlled scenario (default: 10.0)",
     )
     return parser.parse_args()
 
@@ -995,6 +1113,78 @@ def main() -> int:
                         )
                     )
                     print(f"Failed    {scenario_name:>11} / {save_label:<9}: {exc}")
+
+            # --- Rate-controlled scenarios ---
+            if args.rate_fps:
+                rate_targets: List[Tuple[str, SaveTo]] = []
+                if args.save_targets in ("both", "host"):
+                    rate_targets.append(("host", SaveTo.Host))
+                if args.save_targets in ("both", "camera"):
+                    rate_targets.append(("camera_sd", SaveTo.Camera))
+
+                for fps_val in args.rate_fps:
+                    for save_label, save_to in rate_targets:
+                        scenario_name = f"rate_{fps_val:.2f}fps"
+                        try:
+                            try:
+                                controller.wake_up()
+                            except Exception:
+                                pass
+                            time.sleep(0.2)
+                            set_save_target(controller, save_to)
+
+                            if save_to == SaveTo.Host:
+                                stats, rc = run_rate_controlled_host(
+                                    controller, fps_val, args.rate_duration, args.timeout,
+                                )
+                            else:
+                                stats, rc = run_rate_controlled_camera(
+                                    controller, event_counter, fps_val,
+                                    args.rate_duration, args.timeout,
+                                )
+
+                            results.append(
+                                ScenarioResult(
+                                    name=scenario_name,
+                                    save_target=save_label,
+                                    frames=stats.frames,
+                                    capture_elapsed_s=stats.capture_elapsed_s,
+                                    end_to_end_elapsed_s=stats.end_to_end_elapsed_s,
+                                    capture_fps=rc.achieved_fps if rc.achieved_fps else None,
+                                    end_to_end_fps=None,
+                                    ok=True,
+                                    target_fps=fps_val,
+                                    achieved_fps=rc.achieved_fps,
+                                    mean_interval=rc.mean_interval,
+                                    jitter_std=rc.jitter_std,
+                                    mean_schedule_error=rc.mean_schedule_error,
+                                    skipped=len(rc.skipped_indices),
+                                )
+                            )
+                            print(
+                                f"Completed {scenario_name:>20} / {save_label:<9} -> "
+                                f"{stats.frames} frames, "
+                                f"achieved_fps={rc.achieved_fps:.3f}, "
+                                f"jitter={rc.jitter_std:.4f}s, "
+                                f"sched_err={rc.mean_schedule_error:.4f}s"
+                            )
+                            time.sleep(0.3)
+                        except Exception as exc:
+                            results.append(
+                                ScenarioResult(
+                                    name=scenario_name,
+                                    save_target=save_label,
+                                    frames=0,
+                                    capture_elapsed_s=None,
+                                    end_to_end_elapsed_s=None,
+                                    capture_fps=None,
+                                    end_to_end_fps=None,
+                                    ok=False,
+                                    detail=str(exc),
+                                    target_fps=fps_val,
+                                )
+                            )
+                            print(f"Failed    {scenario_name:>20} / {save_label:<9}: {exc}")
         finally:
             try:
                 restored = restore_image_quality_cr3(controller)

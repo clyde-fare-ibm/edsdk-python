@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import json
 import io
@@ -8,6 +9,7 @@ import time
 import uuid
 import queue
 import threading
+from dataclasses import dataclass, field
 from typing import (
     Callable,
     Dict,
@@ -89,6 +91,13 @@ def _pump_messages_once() -> None:
         pass
 
 
+def _is_device_busy(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    if code == 0x00000081:
+        return True
+    return "DEVICE_BUSY" in str(exc).upper()
+
+
 def _save_directory_item(
     object_handle: EdsObject, save_dir: str, dst_basename: Optional[str] = None
 ) -> str:
@@ -106,6 +115,37 @@ def _save_directory_item(
     edsdk.Download(object_handle, info["size"], out_stream)
     edsdk.DownloadComplete(object_handle)
     return dst
+
+
+@dataclass
+class RateControlledResult:
+    """Timing statistics returned by capture_rate_controlled."""
+
+    target_fps: float
+    period: float
+    total_scheduled: int
+    total_accepted: int
+    accepted_times: List[float] = field(default_factory=list)
+    scheduled_times: List[float] = field(default_factory=list)
+    busy_counts: List[int] = field(default_factory=list)
+    skipped_indices: List[int] = field(default_factory=list)
+    achieved_fps: float = 0.0
+    mean_interval: float = 0.0
+    jitter_std: float = 0.0
+    mean_schedule_error: float = 0.0
+    elapsed: float = 0.0
+
+    def summary(self) -> str:
+        lines = [
+            f"target_fps={self.target_fps:.3f}  achieved_fps={self.achieved_fps:.3f}",
+            f"accepted={self.total_accepted}/{self.total_scheduled}  "
+            f"skipped={len(self.skipped_indices)}",
+            f"mean_interval={self.mean_interval:.4f}s  "
+            f"jitter_std={self.jitter_std:.4f}s",
+            f"mean_schedule_error={self.mean_schedule_error:.4f}s  "
+            f"elapsed={self.elapsed:.3f}s",
+        ]
+        return "\n".join(lines)
 
 
 class CameraController:
@@ -895,6 +935,179 @@ class CameraController:
         else:
             expected = target
         return {"marker": marker, "expected": max(0, expected)}
+
+    def capture_rate_controlled(
+        self,
+        target_fps: float,
+        *,
+        duration: Optional[float] = None,
+        num_shots: Optional[int] = None,
+        busy_retry_interval: float = 0.008,
+        max_lateness: Optional[float] = None,
+        skip_policy: bool = False,
+        max_outstanding: int = 5,
+        apply_drive_mode: bool = True,
+    ) -> RateControlledResult:
+        """Clock-scheduled single-shot capture at a target FPS.
+
+        Fires TakePicture commands at exact multiples of 1/target_fps using a
+        monotonic clock.  Does NOT wait for file appearance between shots --
+        only the clock and DEVICE_BUSY back-pressure gate the next trigger.
+
+        Best results with SaveTo.Camera (no host transfer in the critical
+        path).  Works with SaveTo.Host but timing may show more jitter.
+
+        Exactly one of *duration* or *num_shots* must be provided.
+
+        Args:
+            target_fps: Desired frames per second (0.1 -- 10.0).
+            duration: Run length in seconds.
+            num_shots: Total number of shots to schedule.
+            busy_retry_interval: Seconds between DEVICE_BUSY retries.
+            max_lateness: Maximum seconds a shot can be late before the
+                skip/slip policy kicks in.  Defaults to
+                min(0.5, period * 0.5).
+            skip_policy: If True, skip a scheduled slot that exceeds
+                max_lateness.  If False (default), slip -- keep retrying
+                until accepted.
+            max_outstanding: Safety bound on accepted-but-unconfirmed shots.
+                Pauses briefly if the camera pipeline backs up.
+            apply_drive_mode: Automatically set DriveMode to SingleShooting.
+        """
+        if self._cam is None:
+            raise RuntimeError("Camera session not open")
+        if not (0.1 <= target_fps <= 10.0):
+            raise ValueError("target_fps must be between 0.1 and 10.0")
+        if (duration is None) == (num_shots is None):
+            raise ValueError("Exactly one of duration or num_shots must be provided")
+
+        period = 1.0 / target_fps
+        if duration is not None:
+            total_shots = max(1, int(math.ceil(duration * target_fps)))
+        else:
+            total_shots = max(1, int(num_shots))  # type: ignore[arg-type]
+
+        if max_lateness is None:
+            max_lateness = min(0.5, period * 0.5)
+
+        if apply_drive_mode:
+            self.set_properties(
+                drive_mode=DriveMode.SingleShooting,
+                validate=False,
+                tolerate_not_supported=True,
+            )
+
+        scheduled_times: List[float] = []
+        accepted_times: List[float] = []
+        busy_counts: List[int] = []
+        skipped_indices: List[int] = []
+
+        t0 = time.perf_counter()
+
+        for k in range(total_shots):
+            scheduled = t0 + k * period
+            scheduled_times.append(scheduled)
+
+            # --- coarse sleep then spin to scheduled time ---
+            now = time.perf_counter()
+            coarse_wait = scheduled - now - 0.002
+            if coarse_wait > 0:
+                time.sleep(coarse_wait)
+            while time.perf_counter() < scheduled:
+                pass
+
+            # --- outstanding back-pressure check ---
+            if max_outstanding > 0:
+                _, inflight = self._transfers.burst_progress()
+                if inflight >= max_outstanding:
+                    backoff_deadline = time.perf_counter() + max_lateness
+                    while inflight >= max_outstanding:
+                        time.sleep(0.005)
+                        _pump_messages_once()
+                        _, inflight = self._transfers.burst_progress()
+                        if time.perf_counter() >= backoff_deadline:
+                            break
+
+            # --- trigger with DEVICE_BUSY retry ---
+            accepted = False
+            busy_count = 0
+            while not accepted:
+                try:
+                    edsdk.SendCommand(self._cam, CameraCommand.TakePicture, 0)
+                    accepted = True
+                    accepted_times.append(time.perf_counter())
+                except Exception as exc:
+                    if not _is_device_busy(exc):
+                        raise
+                    busy_count += 1
+                    lateness = time.perf_counter() - scheduled
+                    if lateness > max_lateness and skip_policy:
+                        break
+                    time.sleep(busy_retry_interval)
+
+            busy_counts.append(busy_count)
+            if not accepted:
+                skipped_indices.append(k)
+                self._log(
+                    f"Rate-controlled: skipped slot {k} "
+                    f"(busy_count={busy_count})"
+                )
+            else:
+                self._log(
+                    f"Rate-controlled: shot {len(accepted_times)}/{total_shots} "
+                    f"accepted (busy_retries={busy_count})"
+                )
+
+        elapsed = time.perf_counter() - t0
+
+        # --- compute stats ---
+        n_accepted = len(accepted_times)
+        if n_accepted >= 2:
+            intervals = [
+                accepted_times[i] - accepted_times[i - 1]
+                for i in range(1, n_accepted)
+            ]
+            mean_interval = sum(intervals) / len(intervals)
+            variance = sum((x - mean_interval) ** 2 for x in intervals) / len(intervals)
+            jitter_std = math.sqrt(variance)
+            achieved_fps = (n_accepted - 1) / (accepted_times[-1] - accepted_times[0])
+        elif n_accepted == 1:
+            mean_interval = period
+            jitter_std = 0.0
+            achieved_fps = 0.0
+        else:
+            mean_interval = 0.0
+            jitter_std = 0.0
+            achieved_fps = 0.0
+
+        accepted_scheduled = [
+            scheduled_times[k]
+            for k in range(total_shots)
+            if k not in skipped_indices
+        ]
+        if accepted_scheduled and accepted_times:
+            schedule_errors = [
+                a - s for a, s in zip(accepted_times, accepted_scheduled)
+            ]
+            mean_schedule_error = sum(schedule_errors) / len(schedule_errors)
+        else:
+            mean_schedule_error = 0.0
+
+        return RateControlledResult(
+            target_fps=target_fps,
+            period=period,
+            total_scheduled=total_shots,
+            total_accepted=n_accepted,
+            accepted_times=accepted_times,
+            scheduled_times=scheduled_times,
+            busy_counts=busy_counts,
+            skipped_indices=skipped_indices,
+            achieved_fps=achieved_fps,
+            mean_interval=mean_interval,
+            jitter_std=jitter_std,
+            mean_schedule_error=mean_schedule_error,
+            elapsed=elapsed,
+        )
 
     def capture_burst(
         self,
