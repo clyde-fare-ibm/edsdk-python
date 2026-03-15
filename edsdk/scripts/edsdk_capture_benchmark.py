@@ -12,6 +12,7 @@ for both host and camera SD save targets.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import threading
@@ -496,6 +497,90 @@ def run_rate_controlled_camera(
     return stats, result
 
 
+def aggregate_rate_results(
+    runs: List[RateControlledResult],
+) -> RateControlledResult:
+    """Merge per-cycle RateControlledResult instances into one aggregate."""
+    if not runs:
+        raise ValueError("No runs to aggregate")
+    if len(runs) == 1:
+        return runs[0]
+
+    target_fps = runs[0].target_fps
+    period = runs[0].period
+
+    all_accepted: List[float] = []
+    all_scheduled: List[float] = []
+    all_busy: List[int] = []
+    all_skipped: List[int] = []
+    total_scheduled = 0
+    total_elapsed = 0.0
+
+    for run in runs:
+        all_accepted.extend(run.accepted_times)
+        all_scheduled.extend(run.scheduled_times)
+        all_busy.extend(run.busy_counts)
+        offset = total_scheduled
+        all_skipped.extend(idx + offset for idx in run.skipped_indices)
+        total_scheduled += run.total_scheduled
+        total_elapsed += run.elapsed
+
+    n_accepted = len(all_accepted)
+
+    if n_accepted >= 2:
+        intervals = [
+            all_accepted[i] - all_accepted[i - 1]
+            for i in range(1, n_accepted)
+        ]
+        # Filter out inter-cycle pauses: only keep intervals < 3x period
+        capture_intervals = [dt for dt in intervals if dt < period * 3.0]
+        if capture_intervals:
+            mean_interval = sum(capture_intervals) / len(capture_intervals)
+            variance = sum((x - mean_interval) ** 2 for x in capture_intervals) / len(capture_intervals)
+            jitter_std = math.sqrt(variance)
+        else:
+            mean_interval = period
+            jitter_std = 0.0
+        achieved_fps = (n_accepted - 1) / (all_accepted[-1] - all_accepted[0])
+    elif n_accepted == 1:
+        mean_interval = period
+        jitter_std = 0.0
+        achieved_fps = 0.0
+    else:
+        mean_interval = 0.0
+        jitter_std = 0.0
+        achieved_fps = 0.0
+
+    per_run_errors: List[float] = []
+    for run in runs:
+        accepted_sched = [
+            run.scheduled_times[k]
+            for k in range(run.total_scheduled)
+            if k not in run.skipped_indices
+        ]
+        for a, s in zip(run.accepted_times, accepted_sched):
+            per_run_errors.append(a - s)
+    mean_schedule_error = (
+        sum(per_run_errors) / len(per_run_errors) if per_run_errors else 0.0
+    )
+
+    return RateControlledResult(
+        target_fps=target_fps,
+        period=period,
+        total_scheduled=total_scheduled,
+        total_accepted=n_accepted,
+        accepted_times=all_accepted,
+        scheduled_times=all_scheduled,
+        busy_counts=all_busy,
+        skipped_indices=all_skipped,
+        achieved_fps=achieved_fps,
+        mean_interval=mean_interval,
+        jitter_std=jitter_std,
+        mean_schedule_error=mean_schedule_error,
+        elapsed=total_elapsed,
+    )
+
+
 def run_host_blocking_timed(
     controller: CameraController, run_seconds: float, timeout_s: float
 ) -> RunStats:
@@ -890,7 +975,24 @@ def parse_args() -> argparse.Namespace:
         "--rate-duration",
         type=float,
         default=10.0,
-        help="Duration in seconds for each rate-controlled scenario (default: 10.0)",
+        help="Duration in seconds for each rate-controlled capture cycle (default: 10.0)",
+    )
+    parser.add_argument(
+        "--rate-cycles",
+        type=int,
+        default=3,
+        help="Number of capture/pause cycles per rate scenario (default: 3)",
+    )
+    parser.add_argument(
+        "--rate-pause",
+        type=float,
+        default=2.0,
+        help="Pause in seconds between rate-controlled cycles (default: 2.0)",
+    )
+    parser.add_argument(
+        "--rate-only",
+        action="store_true",
+        help="Skip standard benchmark scenarios and only run rate-controlled captures",
     )
     return parser.parse_args()
 
@@ -1006,6 +1108,8 @@ def main() -> int:
         scenarios = [s for s in scenarios if s[1] == SaveTo.Host]
     elif args.save_targets == "camera":
         scenarios = [s for s in scenarios if s[1] == SaveTo.Camera]
+    if args.rate_only:
+        scenarios = []
 
     with CameraController(
         index=args.index,
@@ -1122,62 +1226,92 @@ def main() -> int:
                 if args.save_targets in ("both", "camera"):
                     rate_targets.append(("camera_sd", SaveTo.Camera))
 
+                n_cycles = max(1, args.rate_cycles)
+                pause_s = max(0.0, args.rate_pause)
+
                 for fps_val in args.rate_fps:
                     for save_label, save_to in rate_targets:
                         scenario_name = f"rate_{fps_val:.2f}fps"
-                        try:
-                            # Longer settle before rate scenarios -- the camera
-                            # may still be processing transfers from earlier runs.
-                            run_with_busy_retry(
-                                lambda: controller.wake_up(),
-                                retries=6,
-                                base_delay_s=0.5,
-                            )
-                            time.sleep(1.0)
-                            run_with_busy_retry(
-                                lambda st=save_to: set_save_target(controller, st),
-                                retries=8,
-                                base_delay_s=0.3,
-                                on_retry=lambda: controller.wake_up(),
-                            )
+                        cycle_results: List[RateControlledResult] = []
+                        total_frames = 0
+                        failed = False
+                        fail_detail = ""
 
-                            if save_to == SaveTo.Host:
-                                stats, rc = run_rate_controlled_host(
-                                    controller, fps_val, args.rate_duration, args.timeout,
+                        for cycle in range(n_cycles):
+                            cycle_label = f"{scenario_name} c{cycle+1}/{n_cycles}"
+                            try:
+                                run_with_busy_retry(
+                                    lambda: controller.wake_up(),
+                                    retries=6,
+                                    base_delay_s=0.5,
                                 )
-                            else:
-                                stats, rc = run_rate_controlled_camera(
-                                    controller, event_counter, fps_val,
-                                    args.rate_duration, args.timeout,
+                                time.sleep(1.0)
+                                run_with_busy_retry(
+                                    lambda st=save_to: set_save_target(controller, st),
+                                    retries=8,
+                                    base_delay_s=0.3,
+                                    on_retry=lambda: controller.wake_up(),
                                 )
 
+                                if save_to == SaveTo.Host:
+                                    stats, rc = run_rate_controlled_host(
+                                        controller, fps_val,
+                                        args.rate_duration, args.timeout,
+                                    )
+                                else:
+                                    stats, rc = run_rate_controlled_camera(
+                                        controller, event_counter, fps_val,
+                                        args.rate_duration, args.timeout,
+                                    )
+
+                                cycle_results.append(rc)
+                                total_frames += stats.frames
+                                print(
+                                    f"  {cycle_label:<30} / {save_label:<9} -> "
+                                    f"{stats.frames} frames, "
+                                    f"achieved_fps={rc.achieved_fps:.3f}, "
+                                    f"jitter={rc.jitter_std:.4f}s"
+                                )
+
+                                if cycle < n_cycles - 1:
+                                    time.sleep(pause_s)
+
+                            except Exception as exc:
+                                print(f"  {cycle_label:<30} / {save_label:<9} FAILED: {exc}")
+                                failed = True
+                                fail_detail = str(exc)
+                                break
+
+                        if cycle_results:
+                            agg = aggregate_rate_results(cycle_results)
                             results.append(
                                 ScenarioResult(
                                     name=scenario_name,
                                     save_target=save_label,
-                                    frames=stats.frames,
-                                    capture_elapsed_s=stats.capture_elapsed_s,
-                                    end_to_end_elapsed_s=stats.end_to_end_elapsed_s,
-                                    capture_fps=rc.achieved_fps if rc.achieved_fps else None,
+                                    frames=total_frames,
+                                    capture_elapsed_s=agg.elapsed,
+                                    end_to_end_elapsed_s=agg.elapsed,
+                                    capture_fps=agg.achieved_fps if agg.achieved_fps else None,
                                     end_to_end_fps=None,
-                                    ok=True,
+                                    ok=not failed,
+                                    detail=f"{len(cycle_results)}/{n_cycles} cycles"
+                                    + (f"; {fail_detail}" if failed else ""),
                                     target_fps=fps_val,
-                                    achieved_fps=rc.achieved_fps,
-                                    mean_interval=rc.mean_interval,
-                                    jitter_std=rc.jitter_std,
-                                    mean_schedule_error=rc.mean_schedule_error,
-                                    skipped=len(rc.skipped_indices),
+                                    achieved_fps=agg.achieved_fps,
+                                    mean_interval=agg.mean_interval,
+                                    jitter_std=agg.jitter_std,
+                                    mean_schedule_error=agg.mean_schedule_error,
+                                    skipped=len(agg.skipped_indices),
                                 )
                             )
                             print(
-                                f"Completed {scenario_name:>20} / {save_label:<9} -> "
-                                f"{stats.frames} frames, "
-                                f"achieved_fps={rc.achieved_fps:.3f}, "
-                                f"jitter={rc.jitter_std:.4f}s, "
-                                f"sched_err={rc.mean_schedule_error:.4f}s"
+                                f"Aggregate {scenario_name:>20} / {save_label:<9} -> "
+                                f"{total_frames} frames over {len(cycle_results)} cycles, "
+                                f"achieved_fps={agg.achieved_fps:.3f}, "
+                                f"jitter={agg.jitter_std:.4f}s, "
+                                f"sched_err={agg.mean_schedule_error:.4f}s"
                             )
-                            time.sleep(0.3)
-                        except Exception as exc:
+                        elif failed:
                             results.append(
                                 ScenarioResult(
                                     name=scenario_name,
@@ -1188,11 +1322,11 @@ def main() -> int:
                                     capture_fps=None,
                                     end_to_end_fps=None,
                                     ok=False,
-                                    detail=str(exc),
+                                    detail=fail_detail,
                                     target_fps=fps_val,
                                 )
                             )
-                            print(f"Failed    {scenario_name:>20} / {save_label:<9}: {exc}")
+                        time.sleep(0.3)
         finally:
             try:
                 restored = restore_image_quality_cr3(controller)
