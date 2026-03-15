@@ -1218,13 +1218,11 @@ def main() -> int:
                     )
                     print(f"Failed    {scenario_name:>11} / {save_label:<9}: {exc}")
 
-            # --- Rate-controlled scenarios ---
+            # --- Rate-controlled scenarios (camera-SD only) ---
             if args.rate_fps:
-                rate_targets: List[Tuple[str, SaveTo]] = []
-                if args.save_targets in ("both", "host"):
-                    rate_targets.append(("host", SaveTo.Host))
-                if args.save_targets in ("both", "camera"):
-                    rate_targets.append(("camera_sd", SaveTo.Camera))
+                rate_targets: List[Tuple[str, SaveTo]] = [
+                    ("camera_sd", SaveTo.Camera),
+                ]
 
                 n_cycles = max(1, args.rate_cycles)
                 pause_s = max(0.0, args.rate_pause)
@@ -1253,16 +1251,10 @@ def main() -> int:
                                     on_retry=lambda: controller.wake_up(),
                                 )
 
-                                if save_to == SaveTo.Host:
-                                    stats, rc = run_rate_controlled_host(
-                                        controller, fps_val,
-                                        args.rate_duration, args.timeout,
-                                    )
-                                else:
-                                    stats, rc = run_rate_controlled_camera(
-                                        controller, event_counter, fps_val,
-                                        args.rate_duration, args.timeout,
-                                    )
+                                stats, rc = run_rate_controlled_camera(
+                                    controller, event_counter, fps_val,
+                                    args.rate_duration, args.timeout,
+                                )
 
                                 cycle_results.append(rc)
                                 total_frames += stats.frames
