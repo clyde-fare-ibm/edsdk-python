@@ -68,8 +68,8 @@ class RunStats:
 def is_device_busy(exc: Exception) -> bool:
     msg = str(exc).upper()
     code = getattr(exc, "code", None)
-    # 0x81 == EDS_ERR_DEVICE_BUSY / PTP device busy.
-    return code == 0x00000081 or "DEVICE_BUSY" in msg
+    # 0x81 == EDS_ERR_DEVICE_BUSY, 0x2019 == EDS_ERR_PTP_DEVICE_BUSY
+    return code in (0x00000081, 0x00002019) or "DEVICE_BUSY" in msg
 
 
 def run_with_busy_retry(
@@ -1126,12 +1126,20 @@ def main() -> int:
                     for save_label, save_to in rate_targets:
                         scenario_name = f"rate_{fps_val:.2f}fps"
                         try:
-                            try:
-                                controller.wake_up()
-                            except Exception:
-                                pass
-                            time.sleep(0.2)
-                            set_save_target(controller, save_to)
+                            # Longer settle before rate scenarios -- the camera
+                            # may still be processing transfers from earlier runs.
+                            run_with_busy_retry(
+                                lambda: controller.wake_up(),
+                                retries=6,
+                                base_delay_s=0.5,
+                            )
+                            time.sleep(1.0)
+                            run_with_busy_retry(
+                                lambda st=save_to: set_save_target(controller, st),
+                                retries=8,
+                                base_delay_s=0.3,
+                                on_retry=lambda: controller.wake_up(),
+                            )
 
                             if save_to == SaveTo.Host:
                                 stats, rc = run_rate_controlled_host(

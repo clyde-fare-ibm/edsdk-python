@@ -93,7 +93,7 @@ def _pump_messages_once() -> None:
 
 def _is_device_busy(exc: Exception) -> bool:
     code = getattr(exc, "code", None)
-    if code == 0x00000081:
+    if code in (0x00000081, 0x00002019):  # EDS_ERR_DEVICE_BUSY, EDS_ERR_PTP_DEVICE_BUSY
         return True
     return "DEVICE_BUSY" in str(exc).upper()
 
@@ -936,6 +936,35 @@ class CameraController:
             expected = target
         return {"marker": marker, "expected": max(0, expected)}
 
+    def _rate_setup(self, apply_drive_mode: bool) -> None:
+        """Pre-flight for capture_rate_controlled: wake camera and set drive
+        mode, retrying on DEVICE_BUSY."""
+        setup_deadline = time.perf_counter() + 10.0
+        while True:
+            try:
+                self.wake_up()
+                break
+            except Exception as exc:
+                if not _is_device_busy(exc) or time.perf_counter() >= setup_deadline:
+                    self._log(f"Rate-controlled setup: wake_up failed: {exc}")
+                    break
+                time.sleep(0.3)
+
+        if apply_drive_mode:
+            while True:
+                try:
+                    self.set_properties(
+                        drive_mode=DriveMode.SingleShooting,
+                        validate=False,
+                        tolerate_not_supported=True,
+                    )
+                    break
+                except Exception as exc:
+                    if not _is_device_busy(exc) or time.perf_counter() >= setup_deadline:
+                        raise
+                    self._log("Rate-controlled setup: DEVICE_BUSY on set_properties, retrying...")
+                    time.sleep(0.3)
+
     def capture_rate_controlled(
         self,
         target_fps: float,
@@ -990,12 +1019,11 @@ class CameraController:
         if max_lateness is None:
             max_lateness = min(0.5, period * 0.5)
 
-        if apply_drive_mode:
-            self.set_properties(
-                drive_mode=DriveMode.SingleShooting,
-                validate=False,
-                tolerate_not_supported=True,
-            )
+        expected_duration = total_shots * period
+        absolute_deadline = None  # set after t0
+
+        # --- pre-flight: wake camera and set drive mode with busy retry ---
+        self._rate_setup(apply_drive_mode)
 
         scheduled_times: List[float] = []
         accepted_times: List[float] = []
@@ -1003,6 +1031,7 @@ class CameraController:
         skipped_indices: List[int] = []
 
         t0 = time.perf_counter()
+        absolute_deadline = t0 + expected_duration * 3.0 + 10.0
 
         for k in range(total_shots):
             scheduled = t0 + k * period
@@ -1032,6 +1061,12 @@ class CameraController:
             accepted = False
             busy_count = 0
             while not accepted:
+                if time.perf_counter() >= absolute_deadline:
+                    self._log(
+                        "Rate-controlled: absolute deadline reached, "
+                        "aborting remaining shots"
+                    )
+                    break
                 try:
                     edsdk.SendCommand(self._cam, CameraCommand.TakePicture, 0)
                     accepted = True
@@ -1052,6 +1087,12 @@ class CameraController:
                     f"Rate-controlled: skipped slot {k} "
                     f"(busy_count={busy_count})"
                 )
+                if time.perf_counter() >= absolute_deadline:
+                    for remaining in range(k + 1, total_shots):
+                        scheduled_times.append(t0 + remaining * period)
+                        busy_counts.append(0)
+                        skipped_indices.append(remaining)
+                    break
             else:
                 self._log(
                     f"Rate-controlled: shot {len(accepted_times)}/{total_shots} "
